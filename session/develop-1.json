@@ -1,0 +1,208 @@
+{
+  "session": {
+    "name": "develop-1",
+    "date": "2026-04-14",
+    "project": "Anju Medical Appointment System",
+    "status": "completed"
+  },
+  "planReview": {
+    "file": "plan.md",
+    "issuesFound": 15,
+    "criticalFixed": [
+      "Missing RefreshToken entity — added to Section 2",
+      "Slot capacity source undefined — inherits from Property.capacity, overridable in request",
+      "Who can book appointments — clarified: any authenticated user",
+      "ddl-auto: update unsafe — marked dev-only, JWT secret externalized via env var"
+    ],
+    "significantFixed": [
+      "Slot listing no longer enforces booking window — only booking does",
+      "Cancellation time comparison — explicit: slot.date + slot.startTime",
+      "@Version added to AppointmentSlot for optimistic locking",
+      "Property delete is soft delete (sets INACTIVE)",
+      "Audit implementation — AuditService.log() injected into services"
+    ],
+    "additionalFixed": [
+      "forcePasswordReset filter blocks all endpoints except change-password and logout",
+      "Slot listing bounded by propertyId+date, no pagination needed",
+      "Refund validation checks cumulative SUM, not individual amount"
+    ]
+  },
+  "implementation": {
+    "totalJavaFiles": 71,
+    "modules": [
+      {
+        "name": "common",
+        "files": 5,
+        "components": ["BaseEntity", "BusinessRuleException", "ResourceNotFoundException", "GlobalExceptionHandler", "DataMaskingUtil"]
+      },
+      {
+        "name": "auth",
+        "files": 16,
+        "components": ["User", "RefreshToken", "Role", "JwtProvider", "JwtAuthenticationFilter", "ForcePasswordResetFilter", "SecurityConfig", "AuthService", "UserService", "AuthController", "AdminUserController", "DTOs"]
+      },
+      {
+        "name": "property",
+        "files": 7,
+        "components": ["Property", "PropertyStatus", "PropertyRepository", "PropertyService", "PropertyController", "DTOs"]
+      },
+      {
+        "name": "appointment",
+        "files": 14,
+        "components": ["Appointment", "AppointmentSlot", "AppointmentStatus", "AppointmentRepository", "AppointmentSlotRepository", "AppointmentService", "AppointmentController", "DTOs"]
+      },
+      {
+        "name": "financial",
+        "files": 10,
+        "components": ["Transaction", "Refund", "TransactionType", "TransactionRepository", "RefundRepository", "FinancialService", "FinancialController", "DTOs"]
+      },
+      {
+        "name": "file",
+        "files": 6,
+        "components": ["FileRecord", "FileRecordRepository", "FileService", "FileController", "DTOs"]
+      },
+      {
+        "name": "audit",
+        "files": 5,
+        "components": ["AuditLog", "AuditLogRepository", "AuditService", "AuditController", "DTOs"]
+      }
+    ],
+    "steps": [
+      {"step": 1, "description": "Maven project + pom.xml + application.yml", "status": "completed"},
+      {"step": 2, "description": "BaseEntity, GlobalExceptionHandler, custom exceptions", "status": "completed"},
+      {"step": 3, "description": "User entity, JWT, Security config, Auth controller", "status": "completed"},
+      {"step": 4, "description": "User management endpoints", "status": "completed"},
+      {"step": 5, "description": "Property module CRUD", "status": "completed"},
+      {"step": 6, "description": "AppointmentSlot + Appointment entities", "status": "completed"},
+      {"step": 7, "description": "Slot generation + slot listing", "status": "completed"},
+      {"step": 8, "description": "Booking with conflict detection + idempotency", "status": "completed"},
+      {"step": 9, "description": "Appointment lifecycle (confirm/complete/cancel/reschedule)", "status": "completed"},
+      {"step": 10, "description": "Auto-release scheduled job", "status": "completed"},
+      {"step": 11, "description": "Transaction + Refund entities + endpoints", "status": "completed"},
+      {"step": 12, "description": "Daily report endpoint", "status": "completed"},
+      {"step": 13, "description": "File upload/download endpoints", "status": "completed"},
+      {"step": 14, "description": "Audit logging across all modules", "status": "completed"},
+      {"step": 15, "description": "Dockerfile + docker-compose.yml", "status": "completed"}
+    ]
+  },
+  "tests": {
+    "totalTests": 44,
+    "totalPassed": 44,
+    "totalFailed": 0,
+    "runner": "Docker (./run_tests.sh → Dockerfile.test → mvn clean verify)",
+    "database": "H2 in-memory (application-test.yml)",
+    "suites": [
+      {
+        "class": "AuthControllerTest",
+        "tests": 13,
+        "passed": 13,
+        "scenarios": [
+          "Login returns JWT + cookies",
+          "Wrong password returns 409",
+          "5 wrong attempts locks account",
+          "Locked account returns 409",
+          "Login after lock expires succeeds",
+          "No token returns 401",
+          "Invalid JWT returns 401",
+          "Wrong role returns 403",
+          "Change password wrong old password 409",
+          "Change password weak password 409",
+          "Change password no letters 409",
+          "Change password valid succeeds",
+          "Force password reset blocks other endpoints"
+        ]
+      },
+      {
+        "class": "AppointmentControllerTest",
+        "tests": 15,
+        "passed": 15,
+        "scenarios": [
+          "Slot generation creates correct number of slots",
+          "Duplicate slot generation returns 409",
+          "Booking succeeds for available slot",
+          "Booking rejected when slot at capacity",
+          "Booking rejected when < 2 hours advance",
+          "Booking rejected when > 14 days ahead",
+          "Duplicate idempotency key returns existing",
+          "Lifecycle: CREATED → CONFIRMED → COMPLETED",
+          "Auto-release expired appointment",
+          "Cancel >= 1hr before → CANCELED",
+          "Cancel < 1hr before → EXCEPTION",
+          "EXCEPTION → approve-cancel → CANCELED",
+          "Reschedule 1st and 2nd time succeeds",
+          "3rd reschedule rejected",
+          "Canceled appointment frees slot capacity"
+        ]
+      },
+      {
+        "class": "FinancialControllerTest",
+        "tests": 5,
+        "passed": 5,
+        "scenarios": [
+          "Transaction created with idempotency key",
+          "Duplicate key returns existing transaction",
+          "Refund recorded against transaction",
+          "Cumulative refund > original amount rejected",
+          "Daily report aggregates correctly"
+        ]
+      },
+      {
+        "class": "PropertyControllerTest",
+        "tests": 4,
+        "passed": 4,
+        "scenarios": [
+          "CRUD operations work",
+          "Delete rejected with active appointments",
+          "Finance role cannot create (403)",
+          "Dispatcher role can create"
+        ]
+      },
+      {
+        "class": "FileControllerTest",
+        "tests": 3,
+        "passed": 3,
+        "scenarios": [
+          "Upload stores file and returns metadata",
+          "Download returns correct file bytes",
+          "List files with filters works"
+        ]
+      },
+      {
+        "class": "RbacTest",
+        "tests": 4,
+        "passed": 4,
+        "scenarios": [
+          "ADMIN can access everything",
+          "FINANCE cannot manage appointments",
+          "DISPATCHER cannot record transactions",
+          "REVIEWER can approve cancellations"
+        ]
+      }
+    ]
+  },
+  "bugsFound": [
+    {
+      "description": "Login failed attempts never persisted due to @Transactional rollback",
+      "file": "auth/service/AuthService.java",
+      "cause": "@Transactional rolls back on RuntimeException (BusinessRuleException), so failedLoginAttempts increment was lost",
+      "fix": "Changed to @Transactional(noRollbackFor = BusinessRuleException.class) on login method",
+      "severity": "critical"
+    }
+  ],
+  "projectStructure": [
+    ".dockerignore",
+    ".gitignore",
+    ".mvn/wrapper/maven-wrapper.properties",
+    "docker-compose.yml",
+    "Dockerfile",
+    "Dockerfile.test",
+    "infra/mysql/conf.d/anju.cnf",
+    "mvnw",
+    "pom.xml",
+    "README.md",
+    "run_tests.sh",
+    "src/main/java/com/anju/appointment/",
+    "src/main/resources/application.yml",
+    "src/test/java/com/anju/appointment/",
+    "src/test/resources/application-test.yml"
+  ]
+}

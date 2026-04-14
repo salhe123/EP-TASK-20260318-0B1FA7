@@ -1,0 +1,14 @@
+target/
+*.log
+.idea/
+.vscode/
+.claude/
+.DS_Store
+Thumbs.db
+.env
+.env.*
+*.swp
+*.swo
+*~
+docs/
+Dockerfile.test
