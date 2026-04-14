@@ -238,18 +238,23 @@ class SecurityAuthorizationTest extends BaseIntegrationTest {
 
     @Test
     void refreshToken_worksWithoutAccessToken() throws Exception {
-        // Login to get refresh token
-        String loginResponse = mockMvc.perform(post("/api/auth/login")
+        // Login to get refresh token from response body
+        var loginResult = mockMvc.perform(post("/api/auth/login")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"username\":\"admin\",\"password\":\"Admin123\"}"))
                 .andExpect(status().isOk())
-                .andReturn().getResponse().getContentAsString();
+                .andReturn();
 
-        String refreshToken = objectMapper.readTree(loginResponse).get("refreshToken").asText();
+        String loginBody = loginResult.getResponse().getContentAsString();
+        String refreshToken = objectMapper.readTree(loginBody).get("refreshToken").asText();
 
-        // Use refresh token cookie without any access token
+        // Also get the refreshToken cookie set by the login response
+        Cookie refreshCookie = loginResult.getResponse().getCookie("refreshToken");
+        Cookie cookieToSend = refreshCookie != null ? refreshCookie : new Cookie("refreshToken", refreshToken);
+
+        // Use refresh token cookie without any access token header
         mockMvc.perform(post("/api/auth/refresh")
-                        .cookie(new Cookie("refreshToken", refreshToken)))
+                        .cookie(cookieToSend))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.accessToken", notNullValue()))
                 .andExpect(jsonPath("$.refreshToken", notNullValue()));
@@ -458,14 +463,10 @@ class SecurityAuthorizationTest extends BaseIntegrationTest {
         String staffToken = generateToken(staffUser);
 
         AppointmentSlot slot = createFutureSlot();
+        // createAppointmentWithSlot already creates with CONFIRMED status
         Appointment appointment = createAppointmentWithSlot(slot, dispatcherUser.getId());
 
-        // First confirm it (dispatcher can)
-        mockMvc.perform(put("/api/appointments/" + appointment.getId() + "/confirm")
-                        .header("Authorization", "Bearer " + dispatcherToken))
-                .andExpect(status().isOk());
-
-        // Staff completes
+        // Staff completes the already-confirmed appointment
         mockMvc.perform(put("/api/appointments/" + appointment.getId() + "/complete")
                         .header("Authorization", "Bearer " + staffToken)
                         .contentType(MediaType.APPLICATION_JSON)

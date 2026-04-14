@@ -34,11 +34,6 @@ public interface FileRecordRepository extends JpaRepository<FileRecord, Long> {
                            @Param("referenceId") Long referenceId,
                            @Param("fileName") String fileName);
 
-    @Query("SELECT f FROM FileRecord f WHERE f.module = :module " +
-           "AND ((:referenceId IS NULL AND f.referenceId IS NULL) OR f.referenceId = :referenceId) " +
-           "AND f.fileName = :fileName ORDER BY f.version DESC")
-    java.util.List<FileRecord> findVersionHistory(@Param("module") String module,
-                                                  @Param("referenceId") Long referenceId,
-                                                  @Param("fileName") String fileName);
-
+    @Query("SELECT f FROM FileRecord f WHERE f.parentFileId = :parentFileId ORDER BY f.version DESC")
+    java.util.List<FileRecord> findVersionHistory(@Param("parentFileId") Long parentFileId);
 }

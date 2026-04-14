@@ -21,8 +21,6 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.nio.file.StandardCopyOption;
-import java.util.List;
-import java.util.UUID;
 
 @Service
 public class FileService {
@@ -45,24 +43,12 @@ public class FileService {
         if (file.isEmpty()) {
             throw new BusinessRuleException("File is empty");
         }
-        if (module == null || module.isBlank()) {
-            throw new BusinessRuleException("Module must not be blank");
-        }
 
-        String normalizedModule = module.trim().toUpperCase();
-        String originalFileName = sanitizeFileName(file.getOriginalFilename());
-        List<FileRecord> existingVersions = fileRecordRepository.findVersionHistory(
-                normalizedModule, referenceId, originalFileName);
-        FileRecord latestVersion = existingVersions.isEmpty() ? null : existingVersions.get(0);
-        int nextVersion = latestVersion != null ? latestVersion.getVersion() + 1 : 1;
-        Long parentFileId = latestVersion != null
-                ? (latestVersion.getParentFileId() != null ? latestVersion.getParentFileId() : latestVersion.getId())
-                : null;
+        String upperModule = module.toUpperCase();
 
-        String relativePath = "files/" + normalizedModule.toLowerCase()
+        String relativePath = "files/" + module.toLowerCase()
                 + (referenceId != null ? "/" + referenceId : "")
-                + "/v" + nextVersion + "-" + UUID.randomUUID()
-                + "-" + originalFileName;
+                + "/" + file.getOriginalFilename();
 
         Path targetPath = storagePath.resolve(relativePath).normalize();
 
@@ -74,25 +60,39 @@ public class FileService {
         }
 
         FileRecord record = new FileRecord();
-        record.setFileName(originalFileName);
+        record.setFileName(file.getOriginalFilename());
         record.setFilePath(relativePath);
         record.setContentType(file.getContentType());
         record.setFileSize(file.getSize());
-        record.setModule(normalizedModule);
+        record.setModule(upperModule);
         record.setReferenceId(referenceId);
         record.setDescription(description);
         record.setUploadedBy(uploadedBy);
-        record.setVersion(nextVersion);
-        record.setParentFileId(parentFileId);
+
+        // Handle versioning: find existing files with same name/module/reference
+        Integer maxVersion = fileRecordRepository.findMaxVersion(upperModule, referenceId, file.getOriginalFilename());
+        if (maxVersion != null) {
+            record.setVersion(maxVersion + 1);
+            // Set parentFileId to the first version's ID
+            Page<FileRecord> firstPage = fileRecordRepository.findByFilters(
+                    upperModule, referenceId, file.getOriginalFilename(), Pageable.ofSize(1));
+            if (!firstPage.isEmpty()) {
+                FileRecord earliest = firstPage.getContent().get(0);
+                record.setParentFileId(earliest.getParentFileId() != null
+                        ? earliest.getParentFileId() : earliest.getId());
+            }
+        }
 
         record = fileRecordRepository.save(record);
+
+        // First version: set parentFileId to self for future version chain
         if (record.getParentFileId() == null) {
             record.setParentFileId(record.getId());
             record = fileRecordRepository.save(record);
         }
         auditService.log(uploadedBy, null, "FILE", "CREATE",
                 "FileRecord", record.getId(),
-                "Uploaded file: " + record.getFileName() + " (" + normalizedModule + ") version " + record.getVersion(), null);
+                "Uploaded file: " + record.getFileName() + " (" + upperModule + ")", null);
         return FileRecordResponse.fromEntity(record);
     }
 
@@ -131,9 +131,7 @@ public class FileService {
     public java.util.List<FileRecordResponse> getVersionHistory(Long fileId, Long userId, String role) {
         FileRecord record = findFileOrThrow(fileId);
         enforceFileAccess(record, userId, role);
-        List<FileRecord> history = fileRecordRepository.findVersionHistory(
-                record.getModule(), record.getReferenceId(), record.getFileName());
-        return history.stream()
+        return fileRecordRepository.findVersionHistory(fileId).stream()
                 .map(FileRecordResponse::fromEntity)
                 .toList();
     }
@@ -148,16 +146,5 @@ public class FileService {
     public FileRecord findFileOrThrow(Long id) {
         return fileRecordRepository.findById(id)
                 .orElseThrow(() -> new ResourceNotFoundException("File record not found with id: " + id));
-    }
-
-    private String sanitizeFileName(String originalFileName) {
-        if (originalFileName == null || originalFileName.isBlank()) {
-            throw new BusinessRuleException("Original file name must not be blank");
-        }
-        String sanitized = Path.of(originalFileName).getFileName().toString().trim();
-        if (sanitized.isBlank()) {
-            throw new BusinessRuleException("Original file name must not be blank");
-        }
-        return sanitized.replaceAll("[\\r\\n]", "_");
     }
 }

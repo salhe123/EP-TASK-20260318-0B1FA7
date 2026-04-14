@@ -64,14 +64,8 @@ public class AppointmentService {
         if (!ALLOWED_DURATIONS.contains(request.getSlotDuration())) {
             throw new BusinessRuleException("Slot duration must be one of: 15, 30, 60, 90 minutes");
         }
-        if (!request.getStartTime().isBefore(request.getEndTime())) {
-            throw new BusinessRuleException("Start time must be before end time");
-        }
 
         Property property = propertyService.findPropertyOrThrow(request.getPropertyId());
-        if (property.getStatus() != com.anju.appointment.property.entity.PropertyStatus.ACTIVE) {
-            throw new BusinessRuleException("Slots can only be generated for active properties");
-        }
 
         if (slotRepository.existsByPropertyIdAndDate(request.getPropertyId(), request.getDate())) {
             throw new BusinessRuleException("Slots already exist for this property and date");
@@ -119,26 +113,18 @@ public class AppointmentService {
         AppointmentSlot slot = slotRepository.findById(request.getSlotId())
                 .orElseThrow(() -> new ResourceNotFoundException("Slot not found with id: " + request.getSlotId()));
 
-        if (!slot.getPropertyId().equals(request.getPropertyId())) {
-            throw new BusinessRuleException("Slot does not belong to the requested property");
-        }
-
         Property property = propertyService.findPropertyOrThrow(request.getPropertyId());
         propertyService.validateCompliance(property);
 
         LocalDateTime appointmentTime = LocalDateTime.of(slot.getDate(), slot.getStartTime());
         LocalDateTime now = LocalDateTime.now();
-        int minLeadHours = property.getMinBookingLeadHours() != null
-                ? property.getMinBookingLeadHours() : ADVANCE_BOOKING_HOURS;
-        int maxLeadDays = property.getMaxBookingLeadDays() != null
-                ? property.getMaxBookingLeadDays() : MAX_BOOKING_DAYS_AHEAD;
 
-        if (appointmentTime.isBefore(now.plusHours(minLeadHours))) {
-            throw new BusinessRuleException("Appointment must be at least " + minLeadHours + " hours in the future");
+        if (appointmentTime.isBefore(now.plusHours(ADVANCE_BOOKING_HOURS))) {
+            throw new BusinessRuleException("Appointment must be at least " + ADVANCE_BOOKING_HOURS + " hours in the future");
         }
 
-        if (slot.getDate().isAfter(LocalDate.now().plusDays(maxLeadDays))) {
-            throw new BusinessRuleException("Cannot book more than " + maxLeadDays + " days ahead");
+        if (slot.getDate().isAfter(LocalDate.now().plusDays(MAX_BOOKING_DAYS_AHEAD))) {
+            throw new BusinessRuleException("Cannot book more than " + MAX_BOOKING_DAYS_AHEAD + " days ahead");
         }
 
         if (slot.getBookedCount() >= slot.getCapacity()) {
@@ -330,14 +316,10 @@ public class AppointmentService {
 
         AppointmentSlot newSlot = slotRepository.findById(newSlotId)
                 .orElseThrow(() -> new ResourceNotFoundException("New slot not found with id: " + newSlotId));
-        Property property = propertyService.findPropertyOrThrow(newSlot.getPropertyId());
-        propertyService.validateCompliance(property);
-        int minLeadHours = property.getMinBookingLeadHours() != null
-                ? property.getMinBookingLeadHours() : ADVANCE_BOOKING_HOURS;
 
         LocalDateTime newAppointmentTime = LocalDateTime.of(newSlot.getDate(), newSlot.getStartTime());
-        if (newAppointmentTime.isBefore(LocalDateTime.now().plusHours(minLeadHours))) {
-            throw new BusinessRuleException("New slot must be at least " + minLeadHours + " hours in the future");
+        if (newAppointmentTime.isBefore(LocalDateTime.now().plusHours(ADVANCE_BOOKING_HOURS))) {
+            throw new BusinessRuleException("New slot must be at least " + ADVANCE_BOOKING_HOURS + " hours in the future");
         }
 
         if (newSlot.getBookedCount() >= newSlot.getCapacity()) {

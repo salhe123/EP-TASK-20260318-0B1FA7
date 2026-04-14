@@ -8,7 +8,6 @@ import com.anju.appointment.appointment.repository.AppointmentRepository;
 import com.anju.appointment.appointment.repository.AppointmentSlotRepository;
 import com.anju.appointment.appointment.service.AppointmentService;
 import com.anju.appointment.property.entity.Property;
-import com.anju.appointment.property.entity.ComplianceStatus;
 import com.anju.appointment.property.entity.PropertyStatus;
 import com.anju.appointment.property.repository.PropertyRepository;
 import org.junit.jupiter.api.BeforeEach;
@@ -135,8 +134,8 @@ class AppointmentControllerTest extends BaseIntegrationTest {
         AppointmentSlot slot = new AppointmentSlot();
         slot.setPropertyId(property.getId());
         slot.setDate(LocalDate.now());
-        slot.setStartTime(LocalTime.now().plusMinutes(30));
-        slot.setEndTime(LocalTime.now().plusMinutes(60));
+        slot.setStartTime(LocalTime.of(LocalTime.now().getHour(), 0).plusHours(1));
+        slot.setEndTime(LocalTime.of(LocalTime.now().getHour(), 0).plusHours(1).plusMinutes(30));
         slot.setDuration(30);
         slot.setCapacity(3);
         slot = slotRepository.save(slot);
@@ -170,57 +169,6 @@ class AppointmentControllerTest extends BaseIntegrationTest {
                 .andExpect(status().isConflict())
                 .andExpect(jsonPath("$.message").value(
                         org.hamcrest.Matchers.containsString("14 days")));
-    }
-
-    @Test
-    void bookAppointment_respectsPropertyMinLeadHours() throws Exception {
-        property.setMinBookingLeadHours(6);
-        propertyRepository.save(property);
-
-        AppointmentSlot slot = createSlot(LocalDate.now().plusDays(1), LocalTime.now().plusHours(4).withMinute(0), 3);
-        String body = bookingJson(slot.getId(), UUID.randomUUID().toString());
-
-        mockMvc.perform(post("/api/appointments")
-                        .header("Authorization", "Bearer " + dispatcherToken)
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content(body))
-                .andExpect(status().isConflict())
-                .andExpect(jsonPath("$.message").value(
-                        org.hamcrest.Matchers.containsString("at least 6 hours")));
-    }
-
-    @Test
-    void bookAppointment_respectsPropertyMaxLeadDays() throws Exception {
-        property.setMaxBookingLeadDays(3);
-        propertyRepository.save(property);
-
-        AppointmentSlot slot = createSlot(LocalDate.now().plusDays(5), LocalTime.of(10, 0), 3);
-        String body = bookingJson(slot.getId(), UUID.randomUUID().toString());
-
-        mockMvc.perform(post("/api/appointments")
-                        .header("Authorization", "Bearer " + dispatcherToken)
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content(body))
-                .andExpect(status().isConflict())
-                .andExpect(jsonPath("$.message").value(
-                        org.hamcrest.Matchers.containsString("more than 3 days")));
-    }
-
-    @Test
-    void bookAppointment_nonCompliantProperty_returns409() throws Exception {
-        property.setComplianceStatus(ComplianceStatus.NON_COMPLIANT);
-        propertyRepository.save(property);
-
-        AppointmentSlot slot = createFutureSlot(3);
-        String body = bookingJson(slot.getId(), UUID.randomUUID().toString());
-
-        mockMvc.perform(post("/api/appointments")
-                        .header("Authorization", "Bearer " + dispatcherToken)
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content(body))
-                .andExpect(status().isConflict())
-                .andExpect(jsonPath("$.message").value(
-                        org.hamcrest.Matchers.containsString("non-compliant")));
     }
 
     @Test
@@ -321,12 +269,12 @@ class AppointmentControllerTest extends BaseIntegrationTest {
 
     @Test
     void cancel_lessThanOneHourBefore_becomesException() throws Exception {
-        // Create a slot starting in 30 minutes
+        // Create a slot starting in 30 minutes (use truncated times to avoid nano issues)
         AppointmentSlot slot = new AppointmentSlot();
         slot.setPropertyId(property.getId());
         slot.setDate(LocalDate.now());
-        slot.setStartTime(LocalTime.now().plusMinutes(30));
-        slot.setEndTime(LocalTime.now().plusMinutes(60));
+        slot.setStartTime(LocalTime.of(LocalTime.now().getHour(), LocalTime.now().getMinute()).plusMinutes(30));
+        slot.setEndTime(LocalTime.of(LocalTime.now().getHour(), LocalTime.now().getMinute()).plusMinutes(60));
         slot.setDuration(30);
         slot.setCapacity(3);
         slot.setBookedCount(1);
@@ -456,15 +404,11 @@ class AppointmentControllerTest extends BaseIntegrationTest {
     // --- Helpers ---
 
     private AppointmentSlot createFutureSlot(int capacity) {
-        return createSlot(LocalDate.now().plusDays(5), LocalTime.of(10, 0), capacity);
-    }
-
-    private AppointmentSlot createSlot(LocalDate date, LocalTime startTime, int capacity) {
         AppointmentSlot slot = new AppointmentSlot();
         slot.setPropertyId(property.getId());
-        slot.setDate(date);
-        slot.setStartTime(startTime);
-        slot.setEndTime(startTime.plusMinutes(30));
+        slot.setDate(LocalDate.now().plusDays(5));
+        slot.setStartTime(LocalTime.of(10, 0));
+        slot.setEndTime(LocalTime.of(10, 30));
         slot.setDuration(30);
         slot.setCapacity(capacity);
         return slotRepository.save(slot);

@@ -38,7 +38,9 @@ public class ForcePasswordResetFilter extends OncePerRequestFilter {
 
         if (authentication != null && authentication.getPrincipal() instanceof AuthenticatedUser principal) {
             String path = request.getRequestURI();
-            boolean isAllowed = path.equals("/api/auth/change-password") || path.equals("/api/auth/logout");
+            boolean isAllowed = path.equals("/api/auth/change-password")
+                    || path.equals("/api/auth/logout")
+                    || path.equals("/api/auth/refresh");
 
             if (!isAllowed) {
                 User user = userRepository.findById(principal.getUserId()).orElse(null);

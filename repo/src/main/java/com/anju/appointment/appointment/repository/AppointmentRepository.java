@@ -18,6 +18,8 @@ public interface AppointmentRepository extends JpaRepository<Appointment, Long> 
 
     Optional<Appointment> findByIdempotencyKey(String idempotencyKey);
 
+    boolean existsByIdAndUserId(Long id, Long userId);
+
     List<Appointment> findByStatusAndExpiresAtBefore(AppointmentStatus status, LocalDateTime expiresAt);
 
     boolean existsByPropertyIdAndStatusIn(Long propertyId, List<AppointmentStatus> statuses);

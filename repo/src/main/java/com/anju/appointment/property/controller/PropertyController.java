@@ -55,7 +55,7 @@ public class PropertyController {
     @PutMapping("/{id}")
     @PreAuthorize("hasAnyRole('ADMIN', 'DISPATCHER')")
     public ResponseEntity<PropertyResponse> updateProperty(@PathVariable Long id,
-                                                            @Valid @RequestBody PropertyRequest request,
+                                                            @RequestBody PropertyRequest request,
                                                             @AuthenticationPrincipal AuthenticatedUser principal) {
         return ResponseEntity.ok(propertyService.updateProperty(id, request, principal.getUserId()));
     }

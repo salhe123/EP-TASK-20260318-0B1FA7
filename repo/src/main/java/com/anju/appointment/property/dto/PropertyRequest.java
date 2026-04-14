@@ -1,7 +1,8 @@
 package com.anju.appointment.property.dto;
 
-import jakarta.validation.constraints.DecimalMin;
 import jakarta.validation.constraints.Min;
+import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.NotNull;
 import lombok.Getter;
 import lombok.Setter;
 
@@ -12,14 +13,17 @@ import java.time.LocalDate;
 @Setter
 public class PropertyRequest {
 
+    @NotBlank(message = "Name must not be blank")
     private String name;
 
+    @NotBlank(message = "Type must not be blank")
     private String type;
 
     private String address;
 
     private String description;
 
+    @NotNull(message = "Capacity must not be null")
     @Min(value = 1, message = "Capacity must be at least 1")
     private Integer capacity;
 
@@ -29,17 +33,9 @@ public class PropertyRequest {
     private LocalDate complianceExpiresAt;
 
     // Rental rule fields
-    @DecimalMin(value = "0.00", inclusive = true, message = "Rental price per slot must be greater than or equal to 0")
     private BigDecimal rentalPricePerSlot;
-
-    @DecimalMin(value = "0.00", inclusive = true, message = "Deposit amount must be greater than or equal to 0")
     private BigDecimal depositAmount;
-
-    @Min(value = 0, message = "Minimum booking lead hours must be greater than or equal to 0")
     private Integer minBookingLeadHours;
-
-    @Min(value = 0, message = "Maximum booking lead days must be greater than or equal to 0")
     private Integer maxBookingLeadDays;
-
     private String rentalRules;
 }

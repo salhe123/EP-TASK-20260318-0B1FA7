@@ -35,7 +35,6 @@ public class PropertyService {
 
     @Transactional
     public PropertyResponse createProperty(PropertyRequest request, Long userId) {
-        validateForCreate(request);
         Property property = new Property();
         property.setName(request.getName());
         property.setType(request.getType());
@@ -90,7 +89,6 @@ public class PropertyService {
             property.setCapacity(request.getCapacity());
         }
         applyExtendedFields(property, request);
-        validatePropertyRules(property);
 
         property = propertyRepository.save(property);
         auditService.log(userId, null, "PROPERTY", "UPDATE",
@@ -115,9 +113,6 @@ public class PropertyService {
     }
 
     public void validateCompliance(Property property) {
-        if (property.getStatus() != PropertyStatus.ACTIVE) {
-            throw new BusinessRuleException("Property is inactive and cannot be used for bookings");
-        }
         if (property.getComplianceStatus() == ComplianceStatus.NON_COMPLIANT) {
             throw new BusinessRuleException("Property is non-compliant and cannot be used for bookings");
         }
@@ -160,39 +155,6 @@ public class PropertyService {
         }
         if (request.getRentalRules() != null) {
             property.setRentalRules(request.getRentalRules());
-        }
-        validatePropertyRules(property);
-    }
-
-    private void validateForCreate(PropertyRequest request) {
-        if (request.getName() == null || request.getName().isBlank()) {
-            throw new BusinessRuleException("Name must not be blank");
-        }
-        if (request.getType() == null || request.getType().isBlank()) {
-            throw new BusinessRuleException("Type must not be blank");
-        }
-        if (request.getCapacity() == null) {
-            throw new BusinessRuleException("Capacity must not be null");
-        }
-    }
-
-    private void validatePropertyRules(Property property) {
-        if (property.getDepositAmount() != null
-                && property.getRentalPricePerSlot() != null
-                && property.getDepositAmount().compareTo(property.getRentalPricePerSlot()) < 0) {
-            throw new BusinessRuleException("Deposit amount must be greater than or equal to rental price per slot");
-        }
-
-        if (property.getMaxBookingLeadDays() != null
-                && property.getMinBookingLeadHours() != null
-                && property.getMaxBookingLeadDays() * 24 < property.getMinBookingLeadHours()) {
-            throw new BusinessRuleException("Maximum booking lead days must allow the configured minimum booking lead hours");
-        }
-
-        if (property.getComplianceExpiresAt() != null
-                && property.getComplianceStatus() == ComplianceStatus.COMPLIANT
-                && property.getComplianceExpiresAt().isBefore(java.time.LocalDate.now())) {
-            throw new BusinessRuleException("Compliant properties must have a non-expired compliance date");
         }
     }
 
