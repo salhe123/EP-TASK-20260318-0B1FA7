@@ -3,6 +3,7 @@ package com.anju.appointment.property.controller;
 import com.anju.appointment.auth.security.AuthenticatedUser;
 import com.anju.appointment.property.dto.PropertyRequest;
 import com.anju.appointment.property.dto.PropertyResponse;
+import com.anju.appointment.property.dto.PropertyUpdateRequest;
 import com.anju.appointment.property.service.PropertyService;
 import jakarta.validation.Valid;
 import org.springframework.data.domain.Page;
@@ -55,7 +56,7 @@ public class PropertyController {
     @PutMapping("/{id}")
     @PreAuthorize("hasAnyRole('ADMIN', 'DISPATCHER')")
     public ResponseEntity<PropertyResponse> updateProperty(@PathVariable Long id,
-                                                            @RequestBody PropertyRequest request,
+                                                            @Valid @RequestBody PropertyUpdateRequest request,
                                                             @AuthenticationPrincipal AuthenticatedUser principal) {
         return ResponseEntity.ok(propertyService.updateProperty(id, request, principal.getUserId()));
     }

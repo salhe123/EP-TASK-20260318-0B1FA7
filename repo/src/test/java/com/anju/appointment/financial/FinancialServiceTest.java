@@ -174,7 +174,6 @@ class FinancialServiceTest {
             assertThat(response.getType()).isEqualTo("SERVICE_FEE");
             assertThat(response.getAmount()).isEqualByComparingTo("200.00");
             assertThat(response.getCurrency()).isEqualTo("CNY");
-            assertThat(response.getIdempotencyKey()).isEqualTo("txn-key-1");
 
             verify(transactionRepository).save(transactionCaptor.capture());
             Transaction captured = transactionCaptor.getValue();
@@ -603,6 +602,105 @@ class FinancialServiceTest {
             assertThatThrownBy(() -> financialService.confirmSettlement(999L, USER_ID))
                     .isInstanceOf(ResourceNotFoundException.class)
                     .hasMessageContaining("Settlement not found");
+        }
+    }
+
+    // ---------------------------------------------------------------------------
+    // Mixed-currency report validation
+    // ---------------------------------------------------------------------------
+
+    @Nested
+    class MixedCurrencyReport {
+
+        @Test
+        void singleCurrency_succeeds() {
+            Transaction t1 = buildTransaction(1L, TransactionType.SERVICE_FEE, new BigDecimal("500"), "k1");
+            Transaction t2 = buildTransaction(2L, TransactionType.SERVICE_FEE, new BigDecimal("300"), "k2");
+
+            when(transactionRepository.findByDay(any(), any())).thenReturn(List.of(t1, t2));
+            when(refundRepository.sumRefundsByDay(any(), any())).thenReturn(BigDecimal.ZERO);
+
+            DailyReportResponse report = financialService.getDailyReport(LocalDate.now());
+            assertThat(report.getCurrency()).isEqualTo("CNY");
+            assertThat(report.getTotalAmount()).isEqualByComparingTo("800");
+        }
+
+        @Test
+        void mixedCurrencies_throwsBusinessRuleException() {
+            Transaction t1 = buildTransaction(1L, TransactionType.SERVICE_FEE, new BigDecimal("500"), "k1");
+            t1.setCurrency("CNY");
+            Transaction t2 = buildTransaction(2L, TransactionType.SERVICE_FEE, new BigDecimal("300"), "k2");
+            t2.setCurrency("USD");
+
+            when(transactionRepository.findByDay(any(), any())).thenReturn(List.of(t1, t2));
+            when(refundRepository.sumRefundsByDay(any(), any())).thenReturn(BigDecimal.ZERO);
+
+            assertThatThrownBy(() -> financialService.getDailyReport(LocalDate.now()))
+                    .isInstanceOf(BusinessRuleException.class)
+                    .hasMessageContaining("mixed currencies");
+        }
+
+        @Test
+        void noTransactions_defaultsCNY() {
+            when(transactionRepository.findByDay(any(), any())).thenReturn(List.of());
+            when(refundRepository.sumRefundsByDay(any(), any())).thenReturn(BigDecimal.ZERO);
+
+            DailyReportResponse report = financialService.getDailyReport(LocalDate.now());
+            assertThat(report.getCurrency()).isEqualTo("CNY");
+            assertThat(report.getTotalTransactions()).isZero();
+        }
+    }
+
+    // ---------------------------------------------------------------------------
+    // Cross-user idempotency
+    // ---------------------------------------------------------------------------
+
+    @Nested
+    class CrossUserIdempotency {
+
+        @Test
+        void sameUserIdempotency_returnsExisting() {
+            Transaction existing = buildTransaction(10L, TransactionType.SERVICE_FEE, new BigDecimal("200"), "key-1");
+            when(transactionRepository.findByIdempotencyKey("key-1")).thenReturn(Optional.of(existing));
+
+            TransactionRequest request = buildTransactionRequest("SERVICE_FEE", new BigDecimal("200"), "key-1");
+            TransactionResponse response = financialService.createTransaction(request, USER_ID);
+
+            assertThat(response.getId()).isEqualTo(10L);
+        }
+
+        @Test
+        void differentUserIdempotency_throwsBusinessRuleException() {
+            Transaction existing = buildTransaction(10L, TransactionType.SERVICE_FEE, new BigDecimal("200"), "key-1");
+            when(transactionRepository.findByIdempotencyKey("key-1")).thenReturn(Optional.of(existing));
+
+            TransactionRequest request = buildTransactionRequest("SERVICE_FEE", new BigDecimal("200"), "key-1");
+
+            assertThatThrownBy(() -> financialService.createTransaction(request, 999L))
+                    .isInstanceOf(BusinessRuleException.class)
+                    .hasMessageContaining("Idempotency key already used");
+        }
+    }
+
+    // ---------------------------------------------------------------------------
+    // Invalid date parsing
+    // ---------------------------------------------------------------------------
+
+    @Nested
+    class InvalidDateParsing {
+
+        @Test
+        void malformedDateFrom_throwsBusinessRuleException() {
+            assertThatThrownBy(() -> financialService.listTransactions(null, null, null, "bad-date", null, null))
+                    .isInstanceOf(BusinessRuleException.class)
+                    .hasMessageContaining("Invalid date format");
+        }
+
+        @Test
+        void malformedDateTo_throwsBusinessRuleException() {
+            assertThatThrownBy(() -> financialService.listTransactions(null, null, null, null, "2026-99-99", null))
+                    .isInstanceOf(BusinessRuleException.class)
+                    .hasMessageContaining("Invalid date format");
         }
     }
 }

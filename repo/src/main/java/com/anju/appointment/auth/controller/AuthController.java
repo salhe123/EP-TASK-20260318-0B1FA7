@@ -10,6 +10,9 @@ import jakarta.servlet.http.Cookie;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import jakarta.validation.Valid;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.ResponseCookie;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -23,10 +26,13 @@ public class AuthController {
 
     private final AuthService authService;
     private final JwtProvider jwtProvider;
+    private final boolean secureCookies;
 
-    public AuthController(AuthService authService, JwtProvider jwtProvider) {
+    public AuthController(AuthService authService, JwtProvider jwtProvider,
+                          @Value("${app.security.secure-cookies:true}") boolean secureCookies) {
         this.authService = authService;
         this.jwtProvider = jwtProvider;
+        this.secureCookies = secureCookies;
     }
 
     @PostMapping("/login")
@@ -34,7 +40,13 @@ public class AuthController {
                                                 HttpServletResponse response) {
         LoginResponse loginResponse = authService.login(request);
         setAuthCookies(response, loginResponse.getAccessToken(), loginResponse.getRefreshToken());
-        return ResponseEntity.ok(loginResponse);
+        // Return response without refresh token in body — it is transported via HttpOnly cookie only
+        LoginResponse safeResponse = LoginResponse.builder()
+                .accessToken(loginResponse.getAccessToken())
+                .forcePasswordReset(loginResponse.isForcePasswordReset())
+                .role(loginResponse.getRole())
+                .build();
+        return ResponseEntity.ok(safeResponse);
     }
 
     @PostMapping("/refresh")
@@ -42,7 +54,12 @@ public class AuthController {
         String refreshToken = extractRefreshTokenFromCookie(request);
         LoginResponse loginResponse = authService.refresh(refreshToken);
         setAuthCookies(response, loginResponse.getAccessToken(), loginResponse.getRefreshToken());
-        return ResponseEntity.ok(loginResponse);
+        LoginResponse safeResponse = LoginResponse.builder()
+                .accessToken(loginResponse.getAccessToken())
+                .forcePasswordReset(loginResponse.isForcePasswordReset())
+                .role(loginResponse.getRole())
+                .build();
+        return ResponseEntity.ok(safeResponse);
     }
 
     @PostMapping("/logout")
@@ -61,33 +78,47 @@ public class AuthController {
     }
 
     private void setAuthCookies(HttpServletResponse response, String accessToken, String refreshToken) {
-        Cookie accessCookie = new Cookie("accessToken", accessToken);
-        accessCookie.setHttpOnly(true);
-        accessCookie.setPath("/");
-        accessCookie.setMaxAge((int) jwtProvider.getAccessTokenExpirySeconds());
-        response.addCookie(accessCookie);
+        String sameSite = secureCookies ? "Strict" : "Lax";
+        ResponseCookie accessCookie = ResponseCookie.from("accessToken", accessToken)
+                .httpOnly(true)
+                .secure(secureCookies)
+                .sameSite(sameSite)
+                .path("/")
+                .maxAge(jwtProvider.getAccessTokenExpirySeconds())
+                .build();
+        response.addHeader(HttpHeaders.SET_COOKIE, accessCookie.toString());
 
         if (refreshToken != null) {
-            Cookie refreshCookie = new Cookie("refreshToken", refreshToken);
-            refreshCookie.setHttpOnly(true);
-            refreshCookie.setPath("/api/auth");
-            refreshCookie.setMaxAge((int) jwtProvider.getRefreshTokenExpirySeconds());
-            response.addCookie(refreshCookie);
+            ResponseCookie refreshCookie = ResponseCookie.from("refreshToken", refreshToken)
+                    .httpOnly(true)
+                    .secure(secureCookies)
+                    .sameSite(sameSite)
+                    .path("/api/auth")
+                    .maxAge(jwtProvider.getRefreshTokenExpirySeconds())
+                    .build();
+            response.addHeader(HttpHeaders.SET_COOKIE, refreshCookie.toString());
         }
     }
 
     private void clearAuthCookies(HttpServletResponse response) {
-        Cookie accessCookie = new Cookie("accessToken", "");
-        accessCookie.setHttpOnly(true);
-        accessCookie.setPath("/");
-        accessCookie.setMaxAge(0);
-        response.addCookie(accessCookie);
+        String sameSite = secureCookies ? "Strict" : "Lax";
+        ResponseCookie accessCookie = ResponseCookie.from("accessToken", "")
+                .httpOnly(true)
+                .secure(secureCookies)
+                .sameSite(sameSite)
+                .path("/")
+                .maxAge(0)
+                .build();
+        response.addHeader(HttpHeaders.SET_COOKIE, accessCookie.toString());
 
-        Cookie refreshCookie = new Cookie("refreshToken", "");
-        refreshCookie.setHttpOnly(true);
-        refreshCookie.setPath("/api/auth");
-        refreshCookie.setMaxAge(0);
-        response.addCookie(refreshCookie);
+        ResponseCookie refreshCookie = ResponseCookie.from("refreshToken", "")
+                .httpOnly(true)
+                .secure(secureCookies)
+                .sameSite(sameSite)
+                .path("/api/auth")
+                .maxAge(0)
+                .build();
+        response.addHeader(HttpHeaders.SET_COOKIE, refreshCookie.toString());
     }
 
     private String extractRefreshTokenFromCookie(HttpServletRequest request) {

@@ -11,6 +11,7 @@ import com.anju.appointment.appointment.repository.AppointmentRepository;
 import com.anju.appointment.appointment.repository.AppointmentSlotRepository;
 import com.anju.appointment.appointment.service.AppointmentService;
 import com.anju.appointment.audit.service.AuditService;
+import com.anju.appointment.common.AuthorizationException;
 import com.anju.appointment.common.BusinessRuleException;
 import com.anju.appointment.common.ResourceNotFoundException;
 import com.anju.appointment.property.entity.Property;
@@ -53,6 +54,9 @@ class AppointmentServiceTest {
 
     @Mock
     private AuditService auditService;
+
+    @Mock
+    private com.anju.appointment.auth.repository.UserRepository userRepository;
 
     @InjectMocks
     private AppointmentService appointmentService;
@@ -123,11 +127,9 @@ class AppointmentServiceTest {
         return appt;
     }
 
-    private BookAppointmentRequest buildBookRequest(Long slotId, Long propertyId,
-                                                     String idempotencyKey) {
+    private BookAppointmentRequest buildBookRequest(Long slotId, String idempotencyKey) {
         BookAppointmentRequest req = new BookAppointmentRequest();
         req.setSlotId(slotId);
-        req.setPropertyId(propertyId);
         req.setPatientName("John Doe");
         req.setPatientPhone("13812345678");
         req.setServiceType("GENERAL");
@@ -233,7 +235,7 @@ class AppointmentServiceTest {
         void success() {
             Long userId = 100L;
             AppointmentSlot slot = buildFutureSlot(10L, 1L, 5, 3, 0);
-            BookAppointmentRequest req = buildBookRequest(10L, 1L, "key-1");
+            BookAppointmentRequest req = buildBookRequest(10L, "key-1");
 
             when(appointmentRepository.findByIdempotencyKey("key-1")).thenReturn(Optional.empty());
             when(slotRepository.findById(10L)).thenReturn(Optional.of(slot));
@@ -257,10 +259,73 @@ class AppointmentServiceTest {
         }
 
         @Test
+        @DisplayName("propertyId is derived from slot, not from request")
+        void propertyIdDerivedFromSlot() {
+            Long userId = 100L;
+            AppointmentSlot slot = buildFutureSlot(10L, 1L, 5, 3, 0);
+            BookAppointmentRequest req = buildBookRequest(10L, "key-slot-derive");
+
+            when(appointmentRepository.findByIdempotencyKey("key-slot-derive")).thenReturn(Optional.empty());
+            when(slotRepository.findById(10L)).thenReturn(Optional.of(slot));
+            when(propertyService.findPropertyOrThrow(1L)).thenReturn(defaultProperty);
+            when(appointmentRepository.findOverlapping(eq(userId), any(), any(), any(), any(), isNull()))
+                    .thenReturn(Collections.emptyList());
+            when(appointmentRepository.save(any(Appointment.class))).thenAnswer(inv -> {
+                Appointment a = inv.getArgument(0);
+                a.setId(2L);
+                return a;
+            });
+
+            appointmentService.bookAppointment(req, userId);
+
+            verify(appointmentRepository).save(appointmentCaptor.capture());
+            assertEquals(1L, appointmentCaptor.getValue().getPropertyId());
+        }
+
+        @Test
+        @DisplayName("property-configured lead hours override default")
+        void propertyConfiguredLeadHours() {
+            // Property requires 4 hours advance
+            defaultProperty.setMinBookingLeadHours(4);
+
+            // Slot 3 hours from now — passes default (2h) but fails property rule (4h)
+            AppointmentSlot slot = buildFutureSlot(10L, 1L, 3, 3, 0);
+            BookAppointmentRequest req = buildBookRequest(10L, "key-lead");
+
+            when(appointmentRepository.findByIdempotencyKey("key-lead")).thenReturn(Optional.empty());
+            when(slotRepository.findById(10L)).thenReturn(Optional.of(slot));
+            when(propertyService.findPropertyOrThrow(1L)).thenReturn(defaultProperty);
+
+            BusinessRuleException ex = assertThrows(BusinessRuleException.class,
+                    () -> appointmentService.bookAppointment(req, 100L));
+            assertTrue(ex.getMessage().contains("at least 4 hours"));
+        }
+
+        @Test
+        @DisplayName("property-configured max days override default")
+        void propertyConfiguredMaxDays() {
+            // Property allows only 7 days ahead
+            defaultProperty.setMaxBookingLeadDays(7);
+
+            LocalDate date = LocalDate.now().plusDays(10);
+            AppointmentSlot slot = buildSlot(10L, 1L, date,
+                    LocalTime.of(10, 0), LocalTime.of(10, 30), 30, 3, 0);
+            BookAppointmentRequest req = buildBookRequest(10L, "key-days");
+
+            when(appointmentRepository.findByIdempotencyKey("key-days")).thenReturn(Optional.empty());
+            when(slotRepository.findById(10L)).thenReturn(Optional.of(slot));
+            when(propertyService.findPropertyOrThrow(1L)).thenReturn(defaultProperty);
+
+            BusinessRuleException ex = assertThrows(BusinessRuleException.class,
+                    () -> appointmentService.bookAppointment(req, 100L));
+            assertTrue(ex.getMessage().contains("7 days"));
+        }
+
+        @Test
         @DisplayName("idempotency - returns existing appointment without creating new one")
         void idempotency_returnsExisting() {
             Appointment existing = buildAppointment(1L, 10L, 1L, 100L, AppointmentStatus.CREATED);
-            BookAppointmentRequest req = buildBookRequest(10L, 1L, "idem-1");
+            BookAppointmentRequest req = buildBookRequest(10L, "idem-1");
 
             when(appointmentRepository.findByIdempotencyKey("idem-1")).thenReturn(Optional.of(existing));
 
@@ -275,7 +340,7 @@ class AppointmentServiceTest {
         @Test
         @DisplayName("slot not found throws ResourceNotFoundException")
         void slotNotFound_throws() {
-            BookAppointmentRequest req = buildBookRequest(999L, 1L, "key-2");
+            BookAppointmentRequest req = buildBookRequest(999L, "key-2");
             when(appointmentRepository.findByIdempotencyKey("key-2")).thenReturn(Optional.empty());
             when(slotRepository.findById(999L)).thenReturn(Optional.empty());
 
@@ -287,13 +352,13 @@ class AppointmentServiceTest {
         @DisplayName("compliance failure throws BusinessRuleException")
         void complianceFailure_throws() {
             AppointmentSlot slot = buildFutureSlot(10L, 1L, 5, 3, 0);
-            BookAppointmentRequest req = buildBookRequest(10L, 1L, "key-3");
+            BookAppointmentRequest req = buildBookRequest(10L, "key-3");
 
             when(appointmentRepository.findByIdempotencyKey("key-3")).thenReturn(Optional.empty());
             when(slotRepository.findById(10L)).thenReturn(Optional.of(slot));
             when(propertyService.findPropertyOrThrow(1L)).thenReturn(defaultProperty);
             doThrow(new BusinessRuleException("Property is non-compliant and cannot be used for bookings"))
-                    .when(propertyService).validateCompliance(defaultProperty);
+                    .when(propertyService).validateBookingEligibility(defaultProperty);
 
             BusinessRuleException ex = assertThrows(BusinessRuleException.class,
                     () -> appointmentService.bookAppointment(req, 100L));
@@ -301,11 +366,11 @@ class AppointmentServiceTest {
         }
 
         @Test
-        @DisplayName("too early (<2 hours) throws BusinessRuleException")
+        @DisplayName("too early (<2 hours default) throws BusinessRuleException")
         void tooEarly_throws() {
             // Slot starting in 1 hour
             AppointmentSlot slot = buildFutureSlot(10L, 1L, 1, 3, 0);
-            BookAppointmentRequest req = buildBookRequest(10L, 1L, "key-4");
+            BookAppointmentRequest req = buildBookRequest(10L, "key-4");
 
             when(appointmentRepository.findByIdempotencyKey("key-4")).thenReturn(Optional.empty());
             when(slotRepository.findById(10L)).thenReturn(Optional.of(slot));
@@ -317,12 +382,12 @@ class AppointmentServiceTest {
         }
 
         @Test
-        @DisplayName("too far ahead (>14 days) throws BusinessRuleException")
+        @DisplayName("too far ahead (>14 days default) throws BusinessRuleException")
         void tooFarAhead_throws() {
             LocalDate farDate = LocalDate.now().plusDays(15);
             AppointmentSlot slot = buildSlot(10L, 1L, farDate,
                     LocalTime.of(10, 0), LocalTime.of(10, 30), 30, 3, 0);
-            BookAppointmentRequest req = buildBookRequest(10L, 1L, "key-5");
+            BookAppointmentRequest req = buildBookRequest(10L, "key-5");
 
             when(appointmentRepository.findByIdempotencyKey("key-5")).thenReturn(Optional.empty());
             when(slotRepository.findById(10L)).thenReturn(Optional.of(slot));
@@ -337,7 +402,7 @@ class AppointmentServiceTest {
         @DisplayName("slot full throws BusinessRuleException")
         void slotFull_throws() {
             AppointmentSlot slot = buildFutureSlot(10L, 1L, 5, 3, 3);
-            BookAppointmentRequest req = buildBookRequest(10L, 1L, "key-6");
+            BookAppointmentRequest req = buildBookRequest(10L, "key-6");
 
             when(appointmentRepository.findByIdempotencyKey("key-6")).thenReturn(Optional.empty());
             when(slotRepository.findById(10L)).thenReturn(Optional.of(slot));
@@ -353,7 +418,7 @@ class AppointmentServiceTest {
         void overlapping_throws() {
             Long userId = 100L;
             AppointmentSlot slot = buildFutureSlot(10L, 1L, 5, 3, 0);
-            BookAppointmentRequest req = buildBookRequest(10L, 1L, "key-7");
+            BookAppointmentRequest req = buildBookRequest(10L, "key-7");
 
             Appointment overlap = buildAppointment(99L, 10L, 1L, userId, AppointmentStatus.CONFIRMED);
 
@@ -402,12 +467,12 @@ class AppointmentServiceTest {
         }
 
         @Test
-        @DisplayName("non-owner non-privileged throws BusinessRuleException")
+        @DisplayName("non-owner non-privileged throws AuthorizationException")
         void nonOwnerNonPrivileged_throws() {
             Appointment appt = buildAppointment(1L, 10L, 1L, 100L, AppointmentStatus.CREATED);
             when(appointmentRepository.findById(1L)).thenReturn(Optional.of(appt));
 
-            BusinessRuleException ex = assertThrows(BusinessRuleException.class,
+            AuthorizationException ex = assertThrows(AuthorizationException.class,
                     () -> appointmentService.getAppointment(1L, 999L, "PATIENT"));
             assertTrue(ex.getMessage().contains("Not authorized"));
         }
@@ -433,15 +498,16 @@ class AppointmentServiceTest {
         @Test
         @DisplayName("success from CREATED status")
         void success() {
+            Long actorId = 50L;
             Appointment appt = buildAppointment(1L, 10L, 1L, 100L, AppointmentStatus.CREATED);
             appt.setExpiresAt(LocalDateTime.now().plusMinutes(10));
             when(appointmentRepository.findById(1L)).thenReturn(Optional.of(appt));
             when(appointmentRepository.save(any(Appointment.class))).thenAnswer(inv -> inv.getArgument(0));
 
-            AppointmentResponse resp = appointmentService.confirmAppointment(1L);
+            AppointmentResponse resp = appointmentService.confirmAppointment(1L, actorId);
 
             assertEquals("CONFIRMED", resp.getStatus());
-            verify(auditService).log(isNull(), isNull(), eq("APPOINTMENT"), eq("STATE_CHANGE"),
+            verify(auditService).log(eq(actorId), isNull(), eq("APPOINTMENT"), eq("STATE_CHANGE"),
                     eq("Appointment"), eq(1L), contains("Confirmed"), isNull());
         }
 
@@ -452,7 +518,7 @@ class AppointmentServiceTest {
             when(appointmentRepository.findById(1L)).thenReturn(Optional.of(appt));
 
             BusinessRuleException ex = assertThrows(BusinessRuleException.class,
-                    () -> appointmentService.confirmAppointment(1L));
+                    () -> appointmentService.confirmAppointment(1L, 50L));
             assertTrue(ex.getMessage().contains("not in CREATED status"));
         }
 
@@ -464,7 +530,7 @@ class AppointmentServiceTest {
             when(appointmentRepository.findById(1L)).thenReturn(Optional.of(appt));
 
             BusinessRuleException ex = assertThrows(BusinessRuleException.class,
-                    () -> appointmentService.confirmAppointment(1L));
+                    () -> appointmentService.confirmAppointment(1L, 50L));
             assertTrue(ex.getMessage().contains("expired"));
         }
     }
@@ -478,18 +544,59 @@ class AppointmentServiceTest {
     class CompleteAppointment {
 
         @Test
-        @DisplayName("success from CONFIRMED status")
+        @DisplayName("success from CONFIRMED status by admin")
         void success() {
+            Long actorId = 50L;
             Appointment appt = buildAppointment(1L, 10L, 1L, 100L, AppointmentStatus.CONFIRMED);
             when(appointmentRepository.findById(1L)).thenReturn(Optional.of(appt));
             when(appointmentRepository.save(any(Appointment.class))).thenAnswer(inv -> inv.getArgument(0));
 
-            AppointmentResponse resp = appointmentService.completeAppointment(1L, "Treatment done");
+            AppointmentResponse resp = appointmentService.completeAppointment(1L, "Treatment done", actorId, "ADMIN");
 
             assertEquals("COMPLETED", resp.getStatus());
             assertEquals("Treatment done", resp.getCompletionNotes());
-            verify(auditService).log(isNull(), isNull(), eq("APPOINTMENT"), eq("STATE_CHANGE"),
+            verify(auditService).log(eq(actorId), isNull(), eq("APPOINTMENT"), eq("STATE_CHANGE"),
                     eq("Appointment"), eq(1L), contains("Completed"), isNull());
+        }
+
+        @Test
+        @DisplayName("service staff can complete assigned appointment")
+        void serviceStaff_assignedCanComplete() {
+            Long staffId = 200L;
+            Appointment appt = buildAppointment(1L, 10L, 1L, 100L, AppointmentStatus.CONFIRMED);
+            appt.setAssignedServiceStaffId(staffId);
+            when(appointmentRepository.findById(1L)).thenReturn(Optional.of(appt));
+            when(appointmentRepository.save(any(Appointment.class))).thenAnswer(inv -> inv.getArgument(0));
+
+            AppointmentResponse resp = appointmentService.completeAppointment(1L, "Done", staffId, "SERVICE_STAFF");
+
+            assertEquals("COMPLETED", resp.getStatus());
+        }
+
+        @Test
+        @DisplayName("service staff cannot complete unassigned appointment")
+        void serviceStaff_unassignedCannotComplete() {
+            Long staffId = 200L;
+            Appointment appt = buildAppointment(1L, 10L, 1L, 100L, AppointmentStatus.CONFIRMED);
+            // No assignment
+            when(appointmentRepository.findById(1L)).thenReturn(Optional.of(appt));
+
+            AuthorizationException ex = assertThrows(AuthorizationException.class,
+                    () -> appointmentService.completeAppointment(1L, "Done", staffId, "SERVICE_STAFF"));
+            assertTrue(ex.getMessage().contains("not assigned"));
+        }
+
+        @Test
+        @DisplayName("service staff cannot complete appointment assigned to another staff")
+        void serviceStaff_wrongAssignment() {
+            Long staffId = 200L;
+            Appointment appt = buildAppointment(1L, 10L, 1L, 100L, AppointmentStatus.CONFIRMED);
+            appt.setAssignedServiceStaffId(300L); // assigned to someone else
+            when(appointmentRepository.findById(1L)).thenReturn(Optional.of(appt));
+
+            AuthorizationException ex = assertThrows(AuthorizationException.class,
+                    () -> appointmentService.completeAppointment(1L, "Done", staffId, "SERVICE_STAFF"));
+            assertTrue(ex.getMessage().contains("not assigned"));
         }
 
         @Test
@@ -499,7 +606,7 @@ class AppointmentServiceTest {
             when(appointmentRepository.findById(1L)).thenReturn(Optional.of(appt));
 
             BusinessRuleException ex = assertThrows(BusinessRuleException.class,
-                    () -> appointmentService.completeAppointment(1L, "notes"));
+                    () -> appointmentService.completeAppointment(1L, "notes", 50L, "ADMIN"));
             assertTrue(ex.getMessage().contains("not in CONFIRMED status"));
         }
 
@@ -510,7 +617,7 @@ class AppointmentServiceTest {
             when(appointmentRepository.findById(1L)).thenReturn(Optional.of(appt));
 
             BusinessRuleException ex = assertThrows(BusinessRuleException.class,
-                    () -> appointmentService.completeAppointment(1L, "notes"));
+                    () -> appointmentService.completeAppointment(1L, "notes", 50L, "ADMIN"));
             assertTrue(ex.getMessage().contains("not in CONFIRMED status"));
         }
     }
@@ -569,12 +676,12 @@ class AppointmentServiceTest {
         }
 
         @Test
-        @DisplayName("non-owner non-privileged throws BusinessRuleException")
+        @DisplayName("non-owner non-privileged throws AuthorizationException")
         void nonOwnerNonPrivileged_throws() {
             Appointment appt = buildAppointment(1L, 10L, 1L, 100L, AppointmentStatus.CONFIRMED);
             when(appointmentRepository.findById(1L)).thenReturn(Optional.of(appt));
 
-            BusinessRuleException ex = assertThrows(BusinessRuleException.class,
+            AuthorizationException ex = assertThrows(AuthorizationException.class,
                     () -> appointmentService.cancelAppointment(1L, "reason", 999L, "PATIENT"));
             assertTrue(ex.getMessage().contains("Not authorized"));
         }
@@ -643,6 +750,7 @@ class AppointmentServiceTest {
         @Test
         @DisplayName("success from EXCEPTION status")
         void success() {
+            Long actorId = 50L;
             Appointment appt = buildAppointment(1L, 10L, 1L, 100L, AppointmentStatus.EXCEPTION);
             AppointmentSlot slot = buildFutureSlot(10L, 1L, 3, 3, 2);
 
@@ -650,12 +758,12 @@ class AppointmentServiceTest {
             when(slotRepository.findById(10L)).thenReturn(Optional.of(slot));
             when(appointmentRepository.save(any(Appointment.class))).thenAnswer(inv -> inv.getArgument(0));
 
-            AppointmentResponse resp = appointmentService.approveCancellation(1L, "Approved by admin");
+            AppointmentResponse resp = appointmentService.approveCancellation(1L, "Approved by admin", actorId);
 
             assertEquals("CANCELED", resp.getStatus());
             assertEquals(1, slot.getBookedCount()); // decremented from 2
             verify(slotRepository).save(slot);
-            verify(auditService).log(isNull(), isNull(), eq("APPOINTMENT"), eq("STATE_CHANGE"),
+            verify(auditService).log(eq(actorId), isNull(), eq("APPOINTMENT"), eq("STATE_CHANGE"),
                     eq("Appointment"), eq(1L), contains("Cancellation approved"), isNull());
         }
 
@@ -670,7 +778,7 @@ class AppointmentServiceTest {
             when(slotRepository.findById(10L)).thenReturn(Optional.of(slot));
             when(appointmentRepository.save(any(Appointment.class))).thenAnswer(inv -> inv.getArgument(0));
 
-            appointmentService.approveCancellation(1L, null);
+            appointmentService.approveCancellation(1L, null, 50L);
 
             assertEquals("Original reason", appt.getCancelReason());
         }
@@ -682,7 +790,7 @@ class AppointmentServiceTest {
             when(appointmentRepository.findById(1L)).thenReturn(Optional.of(appt));
 
             BusinessRuleException ex = assertThrows(BusinessRuleException.class,
-                    () -> appointmentService.approveCancellation(1L, "reason"));
+                    () -> appointmentService.approveCancellation(1L, "reason", 50L));
             assertTrue(ex.getMessage().contains("not in EXCEPTION status"));
         }
 
@@ -693,7 +801,7 @@ class AppointmentServiceTest {
             when(appointmentRepository.findById(1L)).thenReturn(Optional.of(appt));
 
             BusinessRuleException ex = assertThrows(BusinessRuleException.class,
-                    () -> appointmentService.approveCancellation(1L, "reason"));
+                    () -> appointmentService.approveCancellation(1L, "reason", 50L));
             assertTrue(ex.getMessage().contains("not in EXCEPTION status"));
         }
     }
@@ -707,7 +815,7 @@ class AppointmentServiceTest {
     class RescheduleAppointment {
 
         @Test
-        @DisplayName("success - reschedules, updates counts, logs audit")
+        @DisplayName("success - reschedules, validates compliance, updates counts, logs audit")
         void success() {
             Long userId = 100L;
             Appointment appt = buildAppointment(1L, 10L, 1L, userId, AppointmentStatus.CONFIRMED);
@@ -719,6 +827,7 @@ class AppointmentServiceTest {
             when(appointmentRepository.findById(1L)).thenReturn(Optional.of(appt));
             when(slotRepository.findById(10L)).thenReturn(Optional.of(oldSlot));
             when(slotRepository.findById(20L)).thenReturn(Optional.of(newSlot));
+            when(propertyService.findPropertyOrThrow(1L)).thenReturn(defaultProperty);
             when(appointmentRepository.findOverlapping(eq(userId), any(), any(), any(), any(), eq(1L)))
                     .thenReturn(Collections.emptyList());
             when(appointmentRepository.save(any(Appointment.class))).thenAnswer(inv -> inv.getArgument(0));
@@ -732,7 +841,8 @@ class AppointmentServiceTest {
             assertEquals(1, newSlot.getBookedCount());  // incremented from 0
             verify(slotRepository).save(oldSlot);
             verify(slotRepository).save(newSlot);
-            verify(auditService).log(isNull(), isNull(), eq("APPOINTMENT"), eq("STATE_CHANGE"),
+            verify(propertyService).validateBookingEligibility(defaultProperty);
+            verify(auditService).log(eq(userId), isNull(), eq("APPOINTMENT"), eq("STATE_CHANGE"),
                     eq("Appointment"), eq(1L), contains("Rescheduled"), isNull());
         }
 
@@ -741,7 +851,7 @@ class AppointmentServiceTest {
         void maxReschedules_throws() {
             Long userId = 100L;
             Appointment appt = buildAppointment(1L, 10L, 1L, userId, AppointmentStatus.CONFIRMED);
-            appt.setRescheduleCount(2); // already at max (MAX_RESCHEDULES = 2)
+            appt.setRescheduleCount(2); // already at max
 
             when(appointmentRepository.findById(1L)).thenReturn(Optional.of(appt));
 
@@ -759,6 +869,7 @@ class AppointmentServiceTest {
 
             when(appointmentRepository.findById(1L)).thenReturn(Optional.of(appt));
             when(slotRepository.findById(20L)).thenReturn(Optional.of(newSlot));
+            when(propertyService.findPropertyOrThrow(1L)).thenReturn(defaultProperty);
 
             BusinessRuleException ex = assertThrows(BusinessRuleException.class,
                     () -> appointmentService.rescheduleAppointment(1L, 20L, "reason", userId, "PATIENT"));
@@ -766,12 +877,12 @@ class AppointmentServiceTest {
         }
 
         @Test
-        @DisplayName("non-owner non-privileged throws BusinessRuleException")
+        @DisplayName("non-owner non-privileged throws AuthorizationException")
         void nonOwnerNonPrivileged_throws() {
             Appointment appt = buildAppointment(1L, 10L, 1L, 100L, AppointmentStatus.CONFIRMED);
             when(appointmentRepository.findById(1L)).thenReturn(Optional.of(appt));
 
-            BusinessRuleException ex = assertThrows(BusinessRuleException.class,
+            AuthorizationException ex = assertThrows(AuthorizationException.class,
                     () -> appointmentService.rescheduleAppointment(1L, 20L, "reason", 999L, "PATIENT"));
             assertTrue(ex.getMessage().contains("Not authorized"));
         }
@@ -813,6 +924,7 @@ class AppointmentServiceTest {
 
             when(appointmentRepository.findById(1L)).thenReturn(Optional.of(appt));
             when(slotRepository.findById(20L)).thenReturn(Optional.of(newSlot));
+            when(propertyService.findPropertyOrThrow(1L)).thenReturn(defaultProperty);
             when(appointmentRepository.findOverlapping(eq(userId), any(), any(), any(), any(), eq(1L)))
                     .thenReturn(List.of(overlap));
 
@@ -939,15 +1051,25 @@ class AppointmentServiceTest {
         }
 
         @Test
-        @DisplayName("SERVICE_STAFF role grants access")
-        void serviceStaffRole_ok() {
+        @DisplayName("SERVICE_STAFF assigned to appointment grants access")
+        void serviceStaffAssigned_ok() {
+            appt.setAssignedServiceStaffId(999L);
             assertDoesNotThrow(() -> appointmentService.getAppointment(1L, 999L, "SERVICE_STAFF"));
+        }
+
+        @Test
+        @DisplayName("SERVICE_STAFF not assigned to appointment throws")
+        void serviceStaffUnassigned_throws() {
+            // No assignment set
+            AuthorizationException ex = assertThrows(AuthorizationException.class,
+                    () -> appointmentService.getAppointment(1L, 999L, "SERVICE_STAFF"));
+            assertTrue(ex.getMessage().contains("Not authorized"));
         }
 
         @Test
         @DisplayName("FINANCE role does NOT grant access (not privileged)")
         void financeRole_throws() {
-            BusinessRuleException ex = assertThrows(BusinessRuleException.class,
+            AuthorizationException ex = assertThrows(AuthorizationException.class,
                     () -> appointmentService.getAppointment(1L, 999L, "FINANCE"));
             assertTrue(ex.getMessage().contains("Not authorized"));
         }
@@ -955,7 +1077,7 @@ class AppointmentServiceTest {
         @Test
         @DisplayName("PATIENT role without ownership throws")
         void patientRole_nonOwner_throws() {
-            BusinessRuleException ex = assertThrows(BusinessRuleException.class,
+            AuthorizationException ex = assertThrows(AuthorizationException.class,
                     () -> appointmentService.getAppointment(1L, 999L, "PATIENT"));
             assertTrue(ex.getMessage().contains("Not authorized"));
         }
@@ -963,9 +1085,186 @@ class AppointmentServiceTest {
         @Test
         @DisplayName("null role without ownership throws")
         void nullRole_nonOwner_throws() {
-            BusinessRuleException ex = assertThrows(BusinessRuleException.class,
+            AuthorizationException ex = assertThrows(AuthorizationException.class,
                     () -> appointmentService.getAppointment(1L, 999L, null));
             assertTrue(ex.getMessage().contains("Not authorized"));
+        }
+    }
+
+    // =========================================================================
+    // 11. assignServiceStaff
+    // =========================================================================
+
+    @Nested
+    @DisplayName("assignServiceStaff")
+    class AssignServiceStaff {
+
+        @Test
+        @DisplayName("success on CONFIRMED appointment")
+        void success() {
+            Long actorId = 50L;
+            Long staffId = 200L;
+            Appointment appt = buildAppointment(1L, 10L, 1L, 100L, AppointmentStatus.CONFIRMED);
+            when(appointmentRepository.findById(1L)).thenReturn(Optional.of(appt));
+
+            com.anju.appointment.auth.entity.User staffUser = new com.anju.appointment.auth.entity.User();
+            staffUser.setId(staffId);
+            staffUser.setEnabled(true);
+            staffUser.setRole(com.anju.appointment.auth.entity.Role.SERVICE_STAFF);
+            when(userRepository.findById(staffId)).thenReturn(Optional.of(staffUser));
+            when(appointmentRepository.save(any(Appointment.class))).thenAnswer(inv -> inv.getArgument(0));
+
+            AppointmentResponse resp = appointmentService.assignServiceStaff(1L, staffId, actorId);
+
+            assertEquals(staffId, resp.getAssignedServiceStaffId());
+            verify(auditService).log(eq(actorId), isNull(), eq("APPOINTMENT"), eq("ASSIGN"),
+                    eq("Appointment"), eq(1L), contains("Assigned"), isNull());
+        }
+
+        @Test
+        @DisplayName("wrong status throws BusinessRuleException")
+        void wrongStatus_throws() {
+            Appointment appt = buildAppointment(1L, 10L, 1L, 100L, AppointmentStatus.CREATED);
+            when(appointmentRepository.findById(1L)).thenReturn(Optional.of(appt));
+
+            BusinessRuleException ex = assertThrows(BusinessRuleException.class,
+                    () -> appointmentService.assignServiceStaff(1L, 200L, 50L));
+            assertTrue(ex.getMessage().contains("CONFIRMED"));
+        }
+
+        @Test
+        @DisplayName("non-existent user throws ResourceNotFoundException")
+        void nonExistentUser_throws() {
+            Appointment appt = buildAppointment(1L, 10L, 1L, 100L, AppointmentStatus.CONFIRMED);
+            when(appointmentRepository.findById(1L)).thenReturn(Optional.of(appt));
+            when(userRepository.findById(200L)).thenReturn(Optional.empty());
+
+            assertThrows(com.anju.appointment.common.ResourceNotFoundException.class,
+                    () -> appointmentService.assignServiceStaff(1L, 200L, 50L));
+        }
+
+        @Test
+        @DisplayName("non-SERVICE_STAFF role throws BusinessRuleException")
+        void wrongRole_throws() {
+            Appointment appt = buildAppointment(1L, 10L, 1L, 100L, AppointmentStatus.CONFIRMED);
+            when(appointmentRepository.findById(1L)).thenReturn(Optional.of(appt));
+
+            com.anju.appointment.auth.entity.User nonStaff = new com.anju.appointment.auth.entity.User();
+            nonStaff.setId(200L);
+            nonStaff.setEnabled(true);
+            nonStaff.setRole(com.anju.appointment.auth.entity.Role.FINANCE);
+            when(userRepository.findById(200L)).thenReturn(Optional.of(nonStaff));
+
+            BusinessRuleException ex = assertThrows(BusinessRuleException.class,
+                    () -> appointmentService.assignServiceStaff(1L, 200L, 50L));
+            assertTrue(ex.getMessage().contains("SERVICE_STAFF"));
+        }
+
+        @Test
+        @DisplayName("disabled user throws BusinessRuleException")
+        void disabledUser_throws() {
+            Appointment appt = buildAppointment(1L, 10L, 1L, 100L, AppointmentStatus.CONFIRMED);
+            when(appointmentRepository.findById(1L)).thenReturn(Optional.of(appt));
+
+            com.anju.appointment.auth.entity.User disabled = new com.anju.appointment.auth.entity.User();
+            disabled.setId(200L);
+            disabled.setEnabled(false);
+            disabled.setRole(com.anju.appointment.auth.entity.Role.SERVICE_STAFF);
+            when(userRepository.findById(200L)).thenReturn(Optional.of(disabled));
+
+            BusinessRuleException ex = assertThrows(BusinessRuleException.class,
+                    () -> appointmentService.assignServiceStaff(1L, 200L, 50L));
+            assertTrue(ex.getMessage().contains("disabled"));
+        }
+    }
+
+    // =========================================================================
+    // 12. Cross-user idempotency key
+    // =========================================================================
+
+    @Nested
+    @DisplayName("cross-user idempotency")
+    class CrossUserIdempotency {
+
+        @Test
+        @DisplayName("same user gets existing appointment back")
+        void sameUser_returnsExisting() {
+            Appointment existing = buildAppointment(1L, 10L, 1L, 100L, AppointmentStatus.CREATED);
+            BookAppointmentRequest req = buildBookRequest(10L, "shared-key");
+
+            when(appointmentRepository.findByIdempotencyKey("shared-key")).thenReturn(Optional.of(existing));
+
+            AppointmentResponse resp = appointmentService.bookAppointment(req, 100L);
+            assertNotNull(resp);
+        }
+
+        @Test
+        @DisplayName("different user with same key throws BusinessRuleException")
+        void differentUser_throws() {
+            Appointment existing = buildAppointment(1L, 10L, 1L, 100L, AppointmentStatus.CREATED);
+            BookAppointmentRequest req = buildBookRequest(10L, "shared-key");
+
+            when(appointmentRepository.findByIdempotencyKey("shared-key")).thenReturn(Optional.of(existing));
+
+            BusinessRuleException ex = assertThrows(BusinessRuleException.class,
+                    () -> appointmentService.bookAppointment(req, 999L));
+            assertTrue(ex.getMessage().contains("Idempotency key already used"));
+        }
+    }
+
+    // =========================================================================
+    // 13. Slot generation validates time window
+    // =========================================================================
+
+    @Nested
+    @DisplayName("slot generation time validation")
+    class SlotGenerationTimeValidation {
+
+        @Test
+        @DisplayName("startTime >= endTime throws BusinessRuleException")
+        void invalidTimeWindow_throws() {
+            SlotGenerateRequest req = buildSlotRequest(1L, LocalDate.now().plusDays(1),
+                    30, LocalTime.of(17, 0), LocalTime.of(9, 0), null);
+
+            BusinessRuleException ex = assertThrows(BusinessRuleException.class,
+                    () -> appointmentService.generateSlots(req));
+            assertTrue(ex.getMessage().contains("before end time"));
+        }
+
+        @Test
+        @DisplayName("startTime == endTime throws BusinessRuleException")
+        void sameStartAndEnd_throws() {
+            SlotGenerateRequest req = buildSlotRequest(1L, LocalDate.now().plusDays(1),
+                    30, LocalTime.of(10, 0), LocalTime.of(10, 0), null);
+
+            BusinessRuleException ex = assertThrows(BusinessRuleException.class,
+                    () -> appointmentService.generateSlots(req));
+            assertTrue(ex.getMessage().contains("before end time"));
+        }
+    }
+
+    // =========================================================================
+    // 14. Invalid date parsing
+    // =========================================================================
+
+    @Nested
+    @DisplayName("invalid date parameters")
+    class InvalidDateParameters {
+
+        @Test
+        @DisplayName("malformed dateFrom throws BusinessRuleException")
+        void malformedDateFrom_throws() {
+            BusinessRuleException ex = assertThrows(BusinessRuleException.class,
+                    () -> appointmentService.listAppointments(null, null, "not-a-date", null, null, 1L, "ADMIN", null));
+            assertTrue(ex.getMessage().contains("Invalid date format"));
+        }
+
+        @Test
+        @DisplayName("malformed dateTo throws BusinessRuleException")
+        void malformedDateTo_throws() {
+            BusinessRuleException ex = assertThrows(BusinessRuleException.class,
+                    () -> appointmentService.listAppointments(null, null, null, "2026-13-99", null, 1L, "ADMIN", null));
+            assertTrue(ex.getMessage().contains("Invalid date format"));
         }
     }
 }

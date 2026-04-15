@@ -23,7 +23,6 @@ public class SettlementResponse {
     private String currency;
     private String status;
     private String notes;
-    private Long createdBy;
     private LocalDateTime createdAt;
     private LocalDateTime updatedAt;
 
@@ -40,7 +39,6 @@ public class SettlementResponse {
                 .currency(settlement.getCurrency())
                 .status(settlement.getStatus().name())
                 .notes(settlement.getNotes())
-                .createdBy(settlement.getCreatedBy())
                 .createdAt(settlement.getCreatedAt())
                 .updatedAt(settlement.getUpdatedAt())
                 .build();

@@ -10,7 +10,7 @@ import static org.hamcrest.Matchers.is;
 import static org.hamcrest.Matchers.notNullValue;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
-import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.cookie;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -24,7 +24,7 @@ class AuthControllerTest extends BaseIntegrationTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.accessToken", notNullValue()))
                 .andExpect(jsonPath("$.role", is("ADMIN")))
-                .andExpect(cookie().exists("accessToken"));
+                .andExpect(header().exists("Set-Cookie"));
     }
 
     @Test
@@ -108,7 +108,7 @@ class AuthControllerTest extends BaseIntegrationTest {
         mockMvc.perform(post("/api/auth/change-password")
                         .header("Authorization", "Bearer " + adminToken)
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"oldPassword\":\"WrongOld1\",\"newPassword\":\"NewPass123\"}"))
+                        .content("{\"oldPassword\":\"WrongOld1\",\"newPassword\":\"NewPass123!xx\"}"))
                 .andExpect(status().isConflict())
                 .andExpect(jsonPath("$.message", is("Current password is incorrect")));
     }
@@ -124,13 +124,13 @@ class AuthControllerTest extends BaseIntegrationTest {
     }
 
     @Test
-    void changePassword_noLetters_returns409() throws Exception {
+    void changePassword_noSpecialChar_returns409() throws Exception {
         mockMvc.perform(post("/api/auth/change-password")
                         .header("Authorization", "Bearer " + adminToken)
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"oldPassword\":\"Admin123\",\"newPassword\":\"12345678\"}"))
+                        .content("{\"oldPassword\":\"Admin123\",\"newPassword\":\"Abcdefgh1234\"}"))
                 .andExpect(status().isConflict())
-                .andExpect(jsonPath("$.message").value(org.hamcrest.Matchers.containsString("letters and numbers")));
+                .andExpect(jsonPath("$.message").value(org.hamcrest.Matchers.containsString("special character")));
     }
 
     @Test
@@ -138,13 +138,13 @@ class AuthControllerTest extends BaseIntegrationTest {
         mockMvc.perform(post("/api/auth/change-password")
                         .header("Authorization", "Bearer " + adminToken)
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"oldPassword\":\"Admin123\",\"newPassword\":\"NewSecure1\"}"))
+                        .content("{\"oldPassword\":\"Admin123\",\"newPassword\":\"NewSecure1!xx\"}"))
                 .andExpect(status().isOk());
 
         // Verify new password works
         mockMvc.perform(post("/api/auth/login")
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"username\":\"admin\",\"password\":\"NewSecure1\"}"))
+                        .content("{\"username\":\"admin\",\"password\":\"NewSecure1!xx\"}"))
                 .andExpect(status().isOk());
     }
 
@@ -165,7 +165,7 @@ class AuthControllerTest extends BaseIntegrationTest {
         mockMvc.perform(post("/api/auth/change-password")
                         .header("Authorization", "Bearer " + token)
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"oldPassword\":\"Initial1\",\"newPassword\":\"Changed1\"}"))
+                        .content("{\"oldPassword\":\"Initial1\",\"newPassword\":\"Changed1!xxxY\"}"))
                 .andExpect(status().isOk());
     }
 }

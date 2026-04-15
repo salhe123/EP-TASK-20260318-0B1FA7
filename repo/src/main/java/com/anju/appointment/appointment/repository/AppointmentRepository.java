@@ -38,12 +38,12 @@ public interface AppointmentRepository extends JpaRepository<Appointment, Long> 
                                        @Param("activeStatuses") List<AppointmentStatus> activeStatuses,
                                        @Param("excludeAppointmentId") Long excludeAppointmentId);
 
-    @Query("SELECT a FROM Appointment a WHERE " +
+    @Query("SELECT a FROM Appointment a JOIN AppointmentSlot s ON a.slotId = s.id WHERE " +
            "(:propertyId IS NULL OR a.propertyId = :propertyId) AND " +
            "(:status IS NULL OR a.status = :status) AND " +
            "(:patientName IS NULL OR LOWER(a.patientName) LIKE LOWER(CONCAT('%', :patientName, '%'))) AND " +
-           "(:dateFrom IS NULL OR a.createdAt >= :dateFrom) AND " +
-           "(:dateTo IS NULL OR a.createdAt <= :dateTo)")
+           "(:dateFrom IS NULL OR CAST(s.date AS timestamp) >= :dateFrom) AND " +
+           "(:dateTo IS NULL OR CAST(s.date AS timestamp) <= :dateTo)")
     Page<Appointment> findByFilters(@Param("propertyId") Long propertyId,
                                      @Param("status") AppointmentStatus status,
                                      @Param("patientName") String patientName,
@@ -51,12 +51,12 @@ public interface AppointmentRepository extends JpaRepository<Appointment, Long> 
                                      @Param("dateTo") LocalDateTime dateTo,
                                      Pageable pageable);
 
-    @Query("SELECT a FROM Appointment a WHERE a.userId = :userId AND " +
+    @Query("SELECT a FROM Appointment a JOIN AppointmentSlot s ON a.slotId = s.id WHERE a.userId = :userId AND " +
            "(:propertyId IS NULL OR a.propertyId = :propertyId) AND " +
            "(:status IS NULL OR a.status = :status) AND " +
            "(:patientName IS NULL OR LOWER(a.patientName) LIKE LOWER(CONCAT('%', :patientName, '%'))) AND " +
-           "(:dateFrom IS NULL OR a.createdAt >= :dateFrom) AND " +
-           "(:dateTo IS NULL OR a.createdAt <= :dateTo)")
+           "(:dateFrom IS NULL OR CAST(s.date AS timestamp) >= :dateFrom) AND " +
+           "(:dateTo IS NULL OR CAST(s.date AS timestamp) <= :dateTo)")
     Page<Appointment> findByUserIdAndFilters(@Param("userId") Long userId,
                                               @Param("propertyId") Long propertyId,
                                               @Param("status") AppointmentStatus status,
@@ -64,4 +64,18 @@ public interface AppointmentRepository extends JpaRepository<Appointment, Long> 
                                               @Param("dateFrom") LocalDateTime dateFrom,
                                               @Param("dateTo") LocalDateTime dateTo,
                                               Pageable pageable);
+
+    @Query("SELECT a FROM Appointment a JOIN AppointmentSlot s ON a.slotId = s.id WHERE a.assignedServiceStaffId = :staffId AND " +
+           "(:propertyId IS NULL OR a.propertyId = :propertyId) AND " +
+           "(:status IS NULL OR a.status = :status) AND " +
+           "(:patientName IS NULL OR LOWER(a.patientName) LIKE LOWER(CONCAT('%', :patientName, '%'))) AND " +
+           "(:dateFrom IS NULL OR CAST(s.date AS timestamp) >= :dateFrom) AND " +
+           "(:dateTo IS NULL OR CAST(s.date AS timestamp) <= :dateTo)")
+    Page<Appointment> findByAssignedStaffAndFilters(@Param("staffId") Long staffId,
+                                                     @Param("propertyId") Long propertyId,
+                                                     @Param("status") AppointmentStatus status,
+                                                     @Param("patientName") String patientName,
+                                                     @Param("dateFrom") LocalDateTime dateFrom,
+                                                     @Param("dateTo") LocalDateTime dateTo,
+                                                     Pageable pageable);
 }

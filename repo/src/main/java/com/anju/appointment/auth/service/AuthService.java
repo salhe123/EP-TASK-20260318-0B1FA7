@@ -27,40 +27,49 @@ public class AuthService implements CommandLineRunner {
     private static final Logger log = LoggerFactory.getLogger(AuthService.class);
     private static final int MAX_FAILED_ATTEMPTS = 5;
     private static final int LOCK_DURATION_MINUTES = 15;
-    private static final int MIN_PASSWORD_LENGTH = 8;
-    private static final Pattern PASSWORD_PATTERN = Pattern.compile("^(?=.*[a-zA-Z])(?=.*\\d).{8,}$");
+    private static final int MIN_PASSWORD_LENGTH = 12;
+    private static final Pattern PASSWORD_PATTERN =
+            Pattern.compile("^(?=.*[a-z])(?=.*[A-Z])(?=.*\\d)(?=.*[^a-zA-Z\\d]).{12,}$");
 
     private final UserRepository userRepository;
     private final RefreshTokenRepository refreshTokenRepository;
     private final PasswordEncoder passwordEncoder;
     private final JwtProvider jwtProvider;
     private final AuditService auditService;
+    private final String bootstrapAdminPassword;
 
     public AuthService(UserRepository userRepository,
                        RefreshTokenRepository refreshTokenRepository,
                        PasswordEncoder passwordEncoder,
                        JwtProvider jwtProvider,
-                       AuditService auditService) {
+                       AuditService auditService,
+                       @org.springframework.beans.factory.annotation.Value("${app.security.bootstrap-admin-password:}") String bootstrapAdminPassword) {
         this.userRepository = userRepository;
         this.refreshTokenRepository = refreshTokenRepository;
         this.passwordEncoder = passwordEncoder;
         this.jwtProvider = jwtProvider;
         this.auditService = auditService;
+        this.bootstrapAdminPassword = bootstrapAdminPassword;
     }
 
     @Override
     public void run(String... args) {
         if (userRepository.count() == 0) {
+            if (bootstrapAdminPassword == null || bootstrapAdminPassword.isBlank()) {
+                log.warn("No bootstrap admin password set (APP_SECURITY_BOOTSTRAP_ADMIN_PASSWORD). "
+                        + "Skipping default admin creation. Set the env variable to bootstrap.");
+                return;
+            }
             User admin = new User();
             admin.setUsername("admin");
-            admin.setPasswordHash(passwordEncoder.encode("Admin123"));
+            admin.setPasswordHash(passwordEncoder.encode(bootstrapAdminPassword));
             admin.setFullName("System Administrator");
             admin.setRole(Role.ADMIN);
             admin.setPhone("");
             admin.setEmail("");
             admin.setForcePasswordReset(true);
             userRepository.save(admin);
-            log.info("Default admin user created (username: admin)");
+            log.info("Default admin user created (username: admin, password must be changed on first login)");
         }
     }
 
@@ -118,6 +127,9 @@ public class AuthService implements CommandLineRunner {
         refreshToken.setExpiresAt(LocalDateTime.now().plusSeconds(jwtProvider.getRefreshTokenExpirySeconds()));
         refreshTokenRepository.save(refreshToken);
 
+        auditService.log(user.getId(), user.getUsername(), "AUTH", "LOGIN",
+                "User", user.getId(), "User logged in", null);
+
         return LoginResponse.builder()
                 .accessToken(accessToken)
                 .refreshToken(refreshTokenValue)
@@ -174,6 +186,8 @@ public class AuthService implements CommandLineRunner {
     @Transactional
     public void logout(Long userId) {
         refreshTokenRepository.revokeAllByUserId(userId);
+        auditService.log(userId, null, "AUTH", "LOGOUT",
+                "User", userId, "User logged out", null);
     }
 
     @Transactional
@@ -190,6 +204,8 @@ public class AuthService implements CommandLineRunner {
         user.setPasswordHash(passwordEncoder.encode(request.getNewPassword()));
         user.setForcePasswordReset(false);
         userRepository.save(user);
+        auditService.log(userId, null, "AUTH", "CHANGE_PASSWORD",
+                "User", userId, "Password changed", null);
     }
 
     public void validatePasswordStrength(String password) {
@@ -197,7 +213,7 @@ public class AuthService implements CommandLineRunner {
             throw new BusinessRuleException("Password must be at least " + MIN_PASSWORD_LENGTH + " characters");
         }
         if (!PASSWORD_PATTERN.matcher(password).matches()) {
-            throw new BusinessRuleException("Password must contain both letters and numbers");
+            throw new BusinessRuleException("Password must contain uppercase, lowercase, digit, and special character");
         }
     }
 }

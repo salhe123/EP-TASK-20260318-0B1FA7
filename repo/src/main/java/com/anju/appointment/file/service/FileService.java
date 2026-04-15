@@ -1,6 +1,7 @@
 package com.anju.appointment.file.service;
 
 import com.anju.appointment.audit.service.AuditService;
+import com.anju.appointment.common.AuthorizationException;
 import com.anju.appointment.common.BusinessRuleException;
 import com.anju.appointment.common.ResourceNotFoundException;
 import com.anju.appointment.file.dto.FileRecordResponse;
@@ -21,9 +22,14 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.nio.file.StandardCopyOption;
+import java.util.Set;
+import java.util.UUID;
 
 @Service
 public class FileService {
+
+    private static final Set<String> ALLOWED_MODULES = Set.of(
+            "PROPERTY", "APPOINTMENT", "FINANCIAL", "AUDIT", "USER");
 
     private final FileRecordRepository fileRecordRepository;
     private final AuditService auditService;
@@ -45,12 +51,25 @@ public class FileService {
         }
 
         String upperModule = module.toUpperCase();
+        if (!ALLOWED_MODULES.contains(upperModule)) {
+            throw new BusinessRuleException("Invalid file module: " + module
+                    + ". Allowed: " + String.join(", ", ALLOWED_MODULES));
+        }
 
+        String originalFilename = sanitizeFilename(file.getOriginalFilename());
+
+        // Generate a unique storage name to avoid collisions and traversal
+        String storageName = UUID.randomUUID() + "_" + originalFilename;
         String relativePath = "files/" + module.toLowerCase()
                 + (referenceId != null ? "/" + referenceId : "")
-                + "/" + file.getOriginalFilename();
+                + "/" + storageName;
 
         Path targetPath = storagePath.resolve(relativePath).normalize();
+
+        // Verify the resolved path stays within the storage root
+        if (!targetPath.startsWith(storagePath)) {
+            throw new BusinessRuleException("Invalid file path");
+        }
 
         try {
             Files.createDirectories(targetPath.getParent());
@@ -60,7 +79,7 @@ public class FileService {
         }
 
         FileRecord record = new FileRecord();
-        record.setFileName(file.getOriginalFilename());
+        record.setFileName(originalFilename);
         record.setFilePath(relativePath);
         record.setContentType(file.getContentType());
         record.setFileSize(file.getSize());
@@ -70,12 +89,12 @@ public class FileService {
         record.setUploadedBy(uploadedBy);
 
         // Handle versioning: find existing files with same name/module/reference
-        Integer maxVersion = fileRecordRepository.findMaxVersion(upperModule, referenceId, file.getOriginalFilename());
+        Integer maxVersion = fileRecordRepository.findMaxVersion(upperModule, referenceId, originalFilename);
         if (maxVersion != null) {
             record.setVersion(maxVersion + 1);
             // Set parentFileId to the first version's ID
             Page<FileRecord> firstPage = fileRecordRepository.findByFilters(
-                    upperModule, referenceId, file.getOriginalFilename(), Pageable.ofSize(1));
+                    upperModule, referenceId, originalFilename, Pageable.ofSize(1));
             if (!firstPage.isEmpty()) {
                 FileRecord earliest = firstPage.getContent().get(0);
                 record.setParentFileId(earliest.getParentFileId() != null
@@ -98,18 +117,26 @@ public class FileService {
 
     public Page<FileRecordResponse> listFiles(String module, Long referenceId, String fileName,
                                                Pageable pageable, Long userId, String role) {
+        String normalizedModule = module != null ? module.toUpperCase() : null;
         boolean canSeeAll = "ADMIN".equals(role) || "DISPATCHER".equals(role);
+        Page<FileRecordResponse> result;
         if (canSeeAll) {
-            return fileRecordRepository.findByFilters(module, referenceId, fileName, pageable)
+            result = fileRecordRepository.findByFilters(normalizedModule, referenceId, fileName, pageable)
+                    .map(FileRecordResponse::fromEntity);
+        } else {
+            result = fileRecordRepository.findByFiltersAndUploadedBy(normalizedModule, referenceId, fileName, userId, pageable)
                     .map(FileRecordResponse::fromEntity);
         }
-        return fileRecordRepository.findByFiltersAndUploadedBy(module, referenceId, fileName, userId, pageable)
-                .map(FileRecordResponse::fromEntity);
+        auditService.log(userId, null, "FILE", "LIST",
+                "FileRecord", null, "Listed files" + (normalizedModule != null ? " module=" + normalizedModule : ""), null);
+        return result;
     }
 
     public FileRecordResponse getFileRecord(Long id, Long userId, String role) {
         FileRecord record = findFileOrThrow(id);
         enforceFileAccess(record, userId, role);
+        auditService.log(userId, null, "FILE", "READ",
+                "FileRecord", id, "Read file record: " + record.getFileName(), null);
         return FileRecordResponse.fromEntity(record);
     }
 
@@ -117,21 +144,32 @@ public class FileService {
         FileRecord record = findFileOrThrow(id);
 
         Path filePath = storagePath.resolve(record.getFilePath()).normalize();
+
+        // Verify the resolved path stays within the storage root
+        if (!filePath.startsWith(storagePath)) {
+            throw new BusinessRuleException("Invalid file path");
+        }
+
         try {
             Resource resource = new UrlResource(filePath.toUri());
             if (!resource.exists()) {
-                throw new ResourceNotFoundException("File not found on disk: " + record.getFilePath());
+                throw new ResourceNotFoundException("File not found on disk");
             }
+            auditService.log(null, null, "FILE", "DOWNLOAD",
+                    "FileRecord", id,
+                    "Downloaded file: " + record.getFileName(), null);
             return resource;
         } catch (MalformedURLException e) {
-            throw new ResourceNotFoundException("File not found: " + record.getFilePath());
+            throw new ResourceNotFoundException("File not found");
         }
     }
 
     public java.util.List<FileRecordResponse> getVersionHistory(Long fileId, Long userId, String role) {
         FileRecord record = findFileOrThrow(fileId);
         enforceFileAccess(record, userId, role);
-        return fileRecordRepository.findVersionHistory(fileId).stream()
+        // Resolve to root of the version chain
+        Long chainId = record.getParentFileId() != null ? record.getParentFileId() : record.getId();
+        return fileRecordRepository.findVersionHistory(chainId).stream()
                 .map(FileRecordResponse::fromEntity)
                 .toList();
     }
@@ -139,12 +177,31 @@ public class FileService {
     public void enforceFileAccess(FileRecord record, Long userId, String role) {
         boolean canSeeAll = "ADMIN".equals(role) || "DISPATCHER".equals(role);
         if (!canSeeAll && !record.getUploadedBy().equals(userId)) {
-            throw new BusinessRuleException("Not authorized to access this file");
+            throw new AuthorizationException("Not authorized to access this file");
         }
     }
 
     public FileRecord findFileOrThrow(Long id) {
         return fileRecordRepository.findById(id)
                 .orElseThrow(() -> new ResourceNotFoundException("File record not found with id: " + id));
+    }
+
+    private String sanitizeFilename(String filename) {
+        if (filename == null || filename.isBlank()) {
+            return "unnamed";
+        }
+        // Strip path separators and traversal segments
+        String sanitized = filename.replace("\\", "/");
+        // Take only the final path component
+        int lastSlash = sanitized.lastIndexOf('/');
+        if (lastSlash >= 0) {
+            sanitized = sanitized.substring(lastSlash + 1);
+        }
+        // Remove leading dots to prevent hidden files / traversal
+        sanitized = sanitized.replaceAll("^\\.+", "");
+        if (sanitized.isBlank()) {
+            return "unnamed";
+        }
+        return sanitized;
     }
 }

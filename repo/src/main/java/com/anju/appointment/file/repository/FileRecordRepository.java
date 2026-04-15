@@ -29,7 +29,8 @@ public interface FileRecordRepository extends JpaRepository<FileRecord, Long> {
                                                  Pageable pageable);
 
     @Query("SELECT MAX(f.version) FROM FileRecord f WHERE f.module = :module " +
-           "AND f.referenceId = :referenceId AND f.fileName = :fileName")
+           "AND ((:referenceId IS NULL AND f.referenceId IS NULL) OR f.referenceId = :referenceId) " +
+           "AND f.fileName = :fileName")
     Integer findMaxVersion(@Param("module") String module,
                            @Param("referenceId") Long referenceId,
                            @Param("fileName") String fileName);

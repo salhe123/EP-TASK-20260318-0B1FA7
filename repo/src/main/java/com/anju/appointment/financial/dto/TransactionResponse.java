@@ -18,8 +18,6 @@ public class TransactionResponse {
     private String currency;
     private String status;
     private String description;
-    private String idempotencyKey;
-    private Long createdBy;
     private LocalDateTime createdAt;
     private LocalDateTime updatedAt;
 
@@ -32,8 +30,6 @@ public class TransactionResponse {
                 .currency(transaction.getCurrency())
                 .status(transaction.getStatus())
                 .description(transaction.getDescription())
-                .idempotencyKey(transaction.getIdempotencyKey())
-                .createdBy(transaction.getCreatedBy())
                 .createdAt(transaction.getCreatedAt())
                 .updatedAt(transaction.getUpdatedAt())
                 .build();

@@ -61,4 +61,6 @@ public class Appointment extends BaseEntity {
 
     @Column(nullable = false, unique = true)
     private String idempotencyKey;
+
+    private Long assignedServiceStaffId;
 }

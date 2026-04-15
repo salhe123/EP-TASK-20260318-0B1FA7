@@ -24,3 +24,7 @@ app:
     path: ./test-storage
   security:
     secondary-verification: false
+    secure-cookies: false
+    bootstrap-admin-password: TestAdmin1!pass
+    cors:
+      allowed-origins: http://localhost:3000,http://localhost:8080

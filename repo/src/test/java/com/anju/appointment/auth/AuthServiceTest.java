@@ -470,11 +470,11 @@ class AuthServiceTest {
         void changePassword_success() {
             User user = createEnabledUser();
             user.setForcePasswordReset(true);
-            ChangePasswordRequest request = createChangePasswordRequest("oldPass", "NewPass123");
+            ChangePasswordRequest request = createChangePasswordRequest("oldPass", "NewPass123!xx");
 
             when(userRepository.findById(1L)).thenReturn(Optional.of(user));
             when(passwordEncoder.matches("oldPass", "hashedPassword")).thenReturn(true);
-            when(passwordEncoder.encode("NewPass123")).thenReturn("newHashedPassword");
+            when(passwordEncoder.encode("NewPass123!xx")).thenReturn("newHashedPassword");
 
             authService.changePassword(1L, request);
 
@@ -503,30 +503,30 @@ class AuthServiceTest {
         @DisplayName("weak new password (too short) - throws BusinessRuleException")
         void changePassword_weakNewPassword_throwsException() {
             User user = createEnabledUser();
-            ChangePasswordRequest request = createChangePasswordRequest("oldPass", "Sh1");
+            ChangePasswordRequest request = createChangePasswordRequest("oldPass", "Sh1!short");
 
             when(userRepository.findById(1L)).thenReturn(Optional.of(user));
             when(passwordEncoder.matches("oldPass", "hashedPassword")).thenReturn(true);
 
             BusinessRuleException ex = assertThrows(BusinessRuleException.class,
                     () -> authService.changePassword(1L, request));
-            assertEquals("Password must be at least 8 characters", ex.getMessage());
+            assertEquals("Password must be at least 12 characters", ex.getMessage());
 
             verify(userRepository, never()).save(any());
         }
 
         @Test
-        @DisplayName("weak new password (no numbers) - throws BusinessRuleException")
+        @DisplayName("weak new password (no special char) - throws BusinessRuleException")
         void changePassword_noNumbers_throwsException() {
             User user = createEnabledUser();
-            ChangePasswordRequest request = createChangePasswordRequest("oldPass", "AllLettersNoNumbers");
+            ChangePasswordRequest request = createChangePasswordRequest("oldPass", "AllLettersNo1234");
 
             when(userRepository.findById(1L)).thenReturn(Optional.of(user));
             when(passwordEncoder.matches("oldPass", "hashedPassword")).thenReturn(true);
 
             BusinessRuleException ex = assertThrows(BusinessRuleException.class,
                     () -> authService.changePassword(1L, request));
-            assertEquals("Password must contain both letters and numbers", ex.getMessage());
+            assertTrue(ex.getMessage().contains("special character"));
         }
 
         @Test
@@ -553,15 +553,15 @@ class AuthServiceTest {
         @Test
         @DisplayName("valid password - no exception")
         void validatePasswordStrength_valid_noException() {
-            assertDoesNotThrow(() -> authService.validatePasswordStrength("ValidPass1"));
+            assertDoesNotThrow(() -> authService.validatePasswordStrength("ValidPass1!x"));
         }
 
         @Test
         @DisplayName("too short - throws BusinessRuleException")
         void validatePasswordStrength_tooShort_throwsException() {
             BusinessRuleException ex = assertThrows(BusinessRuleException.class,
-                    () -> authService.validatePasswordStrength("Ab1"));
-            assertEquals("Password must be at least 8 characters", ex.getMessage());
+                    () -> authService.validatePasswordStrength("Ab1!short"));
+            assertEquals("Password must be at least 12 characters", ex.getMessage());
         }
 
         @Test
@@ -569,29 +569,29 @@ class AuthServiceTest {
         void validatePasswordStrength_null_throwsException() {
             BusinessRuleException ex = assertThrows(BusinessRuleException.class,
                     () -> authService.validatePasswordStrength(null));
-            assertEquals("Password must be at least 8 characters", ex.getMessage());
+            assertEquals("Password must be at least 12 characters", ex.getMessage());
         }
 
         @Test
-        @DisplayName("no letters (digits only) - throws BusinessRuleException")
-        void validatePasswordStrength_noLetters_throwsException() {
+        @DisplayName("missing special character - throws BusinessRuleException")
+        void validatePasswordStrength_noSpecial_throwsException() {
             BusinessRuleException ex = assertThrows(BusinessRuleException.class,
-                    () -> authService.validatePasswordStrength("123456789"));
-            assertEquals("Password must contain both letters and numbers", ex.getMessage());
+                    () -> authService.validatePasswordStrength("Abcdefgh1234"));
+            assertTrue(ex.getMessage().contains("special character"));
         }
 
         @Test
-        @DisplayName("no numbers (letters only) - throws BusinessRuleException")
-        void validatePasswordStrength_noNumbers_throwsException() {
+        @DisplayName("no uppercase - throws BusinessRuleException")
+        void validatePasswordStrength_noUppercase_throwsException() {
             BusinessRuleException ex = assertThrows(BusinessRuleException.class,
-                    () -> authService.validatePasswordStrength("abcdefghi"));
-            assertEquals("Password must contain both letters and numbers", ex.getMessage());
+                    () -> authService.validatePasswordStrength("abcdefgh12!x"));
+            assertTrue(ex.getMessage().contains("special character"));
         }
 
         @Test
-        @DisplayName("exactly 8 chars with letters and digits - valid")
+        @DisplayName("exactly 12 chars with all classes - valid")
         void validatePasswordStrength_exactMinLength_valid() {
-            assertDoesNotThrow(() -> authService.validatePasswordStrength("Abcdefg1"));
+            assertDoesNotThrow(() -> authService.validatePasswordStrength("Abcdefgh12!x"));
         }
     }
 
@@ -604,23 +604,24 @@ class AuthServiceTest {
     class RunTests {
 
         @Test
-        @DisplayName("creates admin when no users exist")
+        @DisplayName("creates admin when no users exist and bootstrap password is set")
         void run_noUsers_createsAdmin() {
+            AuthService serviceWithPassword = new AuthService(
+                    userRepository, refreshTokenRepository, passwordEncoder,
+                    jwtProvider, auditService, "BootstrapPass1!");
             when(userRepository.count()).thenReturn(0L);
-            when(passwordEncoder.encode("Admin123")).thenReturn("encodedAdmin123");
+            when(passwordEncoder.encode("BootstrapPass1!")).thenReturn("encodedBootstrap");
 
-            authService.run();
+            serviceWithPassword.run();
 
             ArgumentCaptor<User> userCaptor = ArgumentCaptor.forClass(User.class);
             verify(userRepository).save(userCaptor.capture());
 
             User savedUser = userCaptor.getValue();
             assertEquals("admin", savedUser.getUsername());
-            assertEquals("encodedAdmin123", savedUser.getPasswordHash());
+            assertEquals("encodedBootstrap", savedUser.getPasswordHash());
             assertEquals("System Administrator", savedUser.getFullName());
             assertEquals(Role.ADMIN, savedUser.getRole());
-            assertEquals("", savedUser.getPhone());
-            assertEquals("", savedUser.getEmail());
             assertTrue(savedUser.isForcePasswordReset());
         }
 
@@ -633,6 +634,19 @@ class AuthServiceTest {
 
             verify(userRepository, never()).save(any());
             verify(passwordEncoder, never()).encode(anyString());
+        }
+
+        @Test
+        @DisplayName("skips admin creation when no bootstrap password set")
+        void run_noBootstrapPassword_skipsCreation() {
+            AuthService serviceNoPassword = new AuthService(
+                    userRepository, refreshTokenRepository, passwordEncoder,
+                    jwtProvider, auditService, "");
+            when(userRepository.count()).thenReturn(0L);
+
+            serviceNoPassword.run();
+
+            verify(userRepository, never()).save(any());
         }
     }
 }

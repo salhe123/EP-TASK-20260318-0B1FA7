@@ -7,6 +7,7 @@ import com.anju.appointment.common.BusinessRuleException;
 import com.anju.appointment.common.ResourceNotFoundException;
 import com.anju.appointment.property.dto.PropertyRequest;
 import com.anju.appointment.property.dto.PropertyResponse;
+import com.anju.appointment.property.dto.PropertyUpdateRequest;
 import com.anju.appointment.property.entity.ComplianceStatus;
 import com.anju.appointment.property.entity.Property;
 import com.anju.appointment.property.entity.PropertyStatus;
@@ -70,7 +71,7 @@ public class PropertyService {
     }
 
     @Transactional
-    public PropertyResponse updateProperty(Long id, PropertyRequest request, Long userId) {
+    public PropertyResponse updateProperty(Long id, PropertyUpdateRequest request, Long userId) {
         Property property = findPropertyOrThrow(id);
 
         if (request.getName() != null) {
@@ -88,7 +89,7 @@ public class PropertyService {
         if (request.getCapacity() != null) {
             property.setCapacity(request.getCapacity());
         }
-        applyExtendedFields(property, request);
+        applyExtendedFieldsFromUpdate(property, request);
 
         property = propertyRepository.save(property);
         auditService.log(userId, null, "PROPERTY", "UPDATE",
@@ -112,22 +113,65 @@ public class PropertyService {
                 "Property", property.getId(), "Soft-deleted property: " + property.getName(), null);
     }
 
-    public void validateCompliance(Property property) {
-        if (property.getComplianceStatus() == ComplianceStatus.NON_COMPLIANT) {
-            throw new BusinessRuleException("Property is non-compliant and cannot be used for bookings");
+    public void validateBookingEligibility(Property property) {
+        // Property must be ACTIVE
+        if (property.getStatus() != PropertyStatus.ACTIVE) {
+            throw new BusinessRuleException("Property is not active and cannot be used for bookings");
         }
-        if (property.getComplianceStatus() == ComplianceStatus.EXPIRED) {
-            throw new BusinessRuleException("Property compliance has expired and must be renewed");
-        }
+
+        // Auto-expire if compliance date has passed
         if (property.getComplianceExpiresAt() != null
                 && property.getComplianceExpiresAt().isBefore(java.time.LocalDate.now())) {
             property.setComplianceStatus(ComplianceStatus.EXPIRED);
             propertyRepository.save(property);
-            throw new BusinessRuleException("Property compliance has expired and must be renewed");
+        }
+
+        // Only COMPLIANT properties can accept bookings
+        if (property.getComplianceStatus() != ComplianceStatus.COMPLIANT) {
+            String reason = property.getComplianceStatus() != null
+                    ? property.getComplianceStatus().name() : "unset";
+            throw new BusinessRuleException(
+                    "Property compliance status is " + reason + " — only COMPLIANT properties can accept bookings");
         }
     }
 
+    /** @deprecated Use {@link #validateBookingEligibility(Property)} instead */
+    public void validateCompliance(Property property) {
+        validateBookingEligibility(property);
+    }
+
     private void applyExtendedFields(Property property, PropertyRequest request) {
+        if (request.getComplianceStatus() != null) {
+            try {
+                property.setComplianceStatus(ComplianceStatus.valueOf(request.getComplianceStatus()));
+            } catch (IllegalArgumentException e) {
+                throw new BusinessRuleException("Invalid compliance status: " + request.getComplianceStatus());
+            }
+        }
+        if (request.getComplianceNotes() != null) {
+            property.setComplianceNotes(request.getComplianceNotes());
+        }
+        if (request.getComplianceExpiresAt() != null) {
+            property.setComplianceExpiresAt(request.getComplianceExpiresAt());
+        }
+        if (request.getRentalPricePerSlot() != null) {
+            property.setRentalPricePerSlot(request.getRentalPricePerSlot());
+        }
+        if (request.getDepositAmount() != null) {
+            property.setDepositAmount(request.getDepositAmount());
+        }
+        if (request.getMinBookingLeadHours() != null) {
+            property.setMinBookingLeadHours(request.getMinBookingLeadHours());
+        }
+        if (request.getMaxBookingLeadDays() != null) {
+            property.setMaxBookingLeadDays(request.getMaxBookingLeadDays());
+        }
+        if (request.getRentalRules() != null) {
+            property.setRentalRules(request.getRentalRules());
+        }
+    }
+
+    private void applyExtendedFieldsFromUpdate(Property property, PropertyUpdateRequest request) {
         if (request.getComplianceStatus() != null) {
             try {
                 property.setComplianceStatus(ComplianceStatus.valueOf(request.getComplianceStatus()));

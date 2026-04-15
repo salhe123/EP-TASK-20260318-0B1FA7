@@ -27,6 +27,7 @@ import org.springframework.transaction.annotation.Transactional;
 import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.time.format.DateTimeParseException;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -57,6 +58,9 @@ public class FinancialService {
     public TransactionResponse createTransaction(TransactionRequest request, Long createdBy) {
         Optional<Transaction> existing = transactionRepository.findByIdempotencyKey(request.getIdempotencyKey());
         if (existing.isPresent()) {
+            if (!existing.get().getCreatedBy().equals(createdBy)) {
+                throw new BusinessRuleException("Idempotency key already used");
+            }
             return TransactionResponse.fromEntity(existing.get());
         }
 
@@ -100,16 +104,21 @@ public class FinancialService {
             }
         }
 
-        LocalDateTime from = dateFrom != null ? LocalDate.parse(dateFrom).atStartOfDay() : null;
-        LocalDateTime to = dateTo != null ? LocalDate.parse(dateTo).atTime(23, 59, 59) : null;
+        LocalDateTime from = parseDate(dateFrom, true);
+        LocalDateTime to = parseDate(dateTo, false);
 
-        return transactionRepository.findByFilters(appointmentId, type, status, from, to, pageable)
+        Page<TransactionResponse> result = transactionRepository.findByFilters(appointmentId, type, status, from, to, pageable)
                 .map(TransactionResponse::fromEntity);
+        auditService.log(null, null, "FINANCIAL", "LIST",
+                "Transaction", null, "Listed transactions", null);
+        return result;
     }
 
     public TransactionResponse getTransaction(Long id) {
         Transaction transaction = transactionRepository.findById(id)
                 .orElseThrow(() -> new ResourceNotFoundException("Transaction not found with id: " + id));
+        auditService.log(null, null, "FINANCIAL", "READ",
+                "Transaction", id, "Read transaction", null);
         return TransactionResponse.fromEntity(transaction);
     }
 
@@ -117,6 +126,9 @@ public class FinancialService {
     public RefundResponse createRefund(RefundRequest request, Long createdBy) {
         Optional<Refund> existing = refundRepository.findByIdempotencyKey(request.getIdempotencyKey());
         if (existing.isPresent()) {
+            if (!existing.get().getCreatedBy().equals(createdBy)) {
+                throw new BusinessRuleException("Idempotency key already used");
+            }
             return RefundResponse.fromEntity(existing.get());
         }
 
@@ -143,18 +155,22 @@ public class FinancialService {
         refund = refundRepository.save(refund);
         auditService.log(createdBy, null, "FINANCIAL", "CREATE",
                 "Refund", refund.getId(),
-                "Created refund: " + refund.getAmount() + " against transaction " + refund.getOriginalTransactionId(),
+                "Created refund: " + refund.getAmount() + " " + originalTransaction.getCurrency()
+                        + " against transaction " + refund.getOriginalTransactionId(),
                 null);
         return RefundResponse.fromEntity(refund);
     }
 
     public Page<RefundResponse> listRefunds(Long transactionId, String dateFrom, String dateTo,
                                              Pageable pageable) {
-        LocalDateTime from = dateFrom != null ? LocalDate.parse(dateFrom).atStartOfDay() : null;
-        LocalDateTime to = dateTo != null ? LocalDate.parse(dateTo).atTime(23, 59, 59) : null;
+        LocalDateTime from = parseDate(dateFrom, true);
+        LocalDateTime to = parseDate(dateTo, false);
 
-        return refundRepository.findByFilters(transactionId, from, to, pageable)
+        Page<RefundResponse> result = refundRepository.findByFilters(transactionId, from, to, pageable)
                 .map(RefundResponse::fromEntity);
+        auditService.log(null, null, "FINANCIAL", "LIST",
+                "Refund", null, "Listed refunds", null);
+        return result;
     }
 
     public DailyReportResponse getDailyReport(LocalDate date) {
@@ -163,6 +179,18 @@ public class FinancialService {
 
         List<Transaction> transactions = transactionRepository.findByDay(dayStart, dayEnd);
         BigDecimal totalRefunds = refundRepository.sumRefundsByDay(dayStart, dayEnd);
+
+        // Validate all transactions share the same currency
+        long distinctCurrencies = transactions.stream()
+                .map(Transaction::getCurrency)
+                .distinct()
+                .count();
+        if (distinctCurrencies > 1) {
+            throw new BusinessRuleException("Cannot generate report: transactions contain mixed currencies. "
+                    + "All transactions in the reporting period must use the same currency.");
+        }
+        String reportCurrency = transactions.isEmpty() ? "CNY"
+                : transactions.get(0).getCurrency();
 
         BigDecimal totalAmount = transactions.stream()
                 .map(Transaction::getAmount)
@@ -181,13 +209,17 @@ public class FinancialService {
                         .build())
                 .toList();
 
+        auditService.log(null, null, "FINANCIAL", "REPORT",
+                "DailyReport", null,
+                "Generated daily report for " + date, null);
+
         return DailyReportResponse.builder()
                 .date(date)
                 .totalTransactions(transactions.size())
                 .totalAmount(totalAmount)
                 .totalRefunds(totalRefunds)
                 .netAmount(totalAmount.subtract(totalRefunds))
-                .currency("CNY")
+                .currency(reportCurrency)
                 .byType(typeSummaries)
                 .generatedAt(LocalDateTime.now())
                 .build();
@@ -212,6 +244,9 @@ public class FinancialService {
                         .append(ts.getAmount()).append("\n");
             }
         }
+        auditService.log(null, null, "FINANCIAL", "EXPORT",
+                "DailyReport", null,
+                "Exported daily report CSV for " + date, null);
         return csv.toString();
     }
 
@@ -273,6 +308,8 @@ public class FinancialService {
     public SettlementResponse getSettlement(Long id) {
         Settlement settlement = settlementRepository.findById(id)
                 .orElseThrow(() -> new ResourceNotFoundException("Settlement not found with id: " + id));
+        auditService.log(null, null, "FINANCIAL", "READ",
+                "Settlement", id, "Read settlement", null);
         return SettlementResponse.fromEntity(settlement);
     }
 
@@ -286,9 +323,35 @@ public class FinancialService {
                 throw new BusinessRuleException("Invalid settlement status: " + statusFilter);
             }
         }
-        LocalDate from = dateFrom != null ? LocalDate.parse(dateFrom) : null;
-        LocalDate to = dateTo != null ? LocalDate.parse(dateTo) : null;
-        return settlementRepository.findByFilters(status, from, to, pageable)
+        LocalDate from = parseDateOnly(dateFrom);
+        LocalDate to = parseDateOnly(dateTo);
+        Page<SettlementResponse> result = settlementRepository.findByFilters(status, from, to, pageable)
                 .map(SettlementResponse::fromEntity);
+        auditService.log(null, null, "FINANCIAL", "LIST",
+                "Settlement", null, "Listed settlements", null);
+        return result;
+    }
+
+    private LocalDateTime parseDate(String dateStr, boolean startOfDay) {
+        if (dateStr == null) {
+            return null;
+        }
+        try {
+            LocalDate date = LocalDate.parse(dateStr);
+            return startOfDay ? date.atStartOfDay() : date.atTime(23, 59, 59);
+        } catch (DateTimeParseException e) {
+            throw new BusinessRuleException("Invalid date format: " + dateStr + ". Expected yyyy-MM-dd");
+        }
+    }
+
+    private LocalDate parseDateOnly(String dateStr) {
+        if (dateStr == null) {
+            return null;
+        }
+        try {
+            return LocalDate.parse(dateStr);
+        } catch (DateTimeParseException e) {
+            throw new BusinessRuleException("Invalid date format: " + dateStr + ". Expected yyyy-MM-dd");
+        }
     }
 }

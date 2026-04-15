@@ -83,16 +83,21 @@ public class AppointmentController {
 
     @PutMapping("/{id}/confirm")
     @PreAuthorize("hasAnyRole('DISPATCHER', 'REVIEWER', 'ADMIN')")
-    public ResponseEntity<AppointmentResponse> confirmAppointment(@PathVariable Long id) {
-        return ResponseEntity.ok(appointmentService.confirmAppointment(id));
+    public ResponseEntity<AppointmentResponse> confirmAppointment(
+            @PathVariable Long id,
+            @AuthenticationPrincipal AuthenticatedUser principal) {
+        return ResponseEntity.ok(appointmentService.confirmAppointment(id, principal.getUserId()));
     }
 
     @PutMapping("/{id}/complete")
     @PreAuthorize("hasAnyRole('DISPATCHER', 'REVIEWER', 'ADMIN', 'SERVICE_STAFF')")
-    public ResponseEntity<AppointmentResponse> completeAppointment(@PathVariable Long id,
-                                                                    @RequestBody(required = false) CompleteRequest request) {
+    public ResponseEntity<AppointmentResponse> completeAppointment(
+            @PathVariable Long id,
+            @RequestBody(required = false) CompleteRequest request,
+            @AuthenticationPrincipal AuthenticatedUser principal) {
         String notes = request != null ? request.getCompletionNotes() : null;
-        return ResponseEntity.ok(appointmentService.completeAppointment(id, notes));
+        return ResponseEntity.ok(appointmentService.completeAppointment(
+                id, notes, principal.getUserId(), principal.getRole()));
     }
 
     @PutMapping("/{id}/cancel")
@@ -108,9 +113,10 @@ public class AppointmentController {
     @PreAuthorize("hasAnyRole('REVIEWER', 'ADMIN')")
     public ResponseEntity<AppointmentResponse> approveCancellation(
             @PathVariable Long id,
-            @RequestBody(required = false) CancelRequest request) {
+            @RequestBody(required = false) CancelRequest request,
+            @AuthenticationPrincipal AuthenticatedUser principal) {
         String reason = request != null ? request.getReason() : null;
-        return ResponseEntity.ok(appointmentService.approveCancellation(id, reason));
+        return ResponseEntity.ok(appointmentService.approveCancellation(id, reason, principal.getUserId()));
     }
 
     @PutMapping("/{id}/reschedule")
@@ -121,5 +127,14 @@ public class AppointmentController {
         return ResponseEntity.ok(appointmentService.rescheduleAppointment(
                 id, request.getNewSlotId(), request.getReason(),
                 principal.getUserId(), principal.getRole()));
+    }
+
+    @PutMapping("/{id}/assign")
+    @PreAuthorize("hasAnyRole('DISPATCHER', 'ADMIN')")
+    public ResponseEntity<AppointmentResponse> assignServiceStaff(
+            @PathVariable Long id,
+            @RequestParam Long serviceStaffId,
+            @AuthenticationPrincipal AuthenticatedUser principal) {
+        return ResponseEntity.ok(appointmentService.assignServiceStaff(id, serviceStaffId, principal.getUserId()));
     }
 }

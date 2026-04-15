@@ -31,6 +31,9 @@ services:
       SPRING_DATASOURCE_PASSWORD: anju_pass
       SPRING_JPA_HIBERNATE_DDL_AUTO: update
       JWT_SECRET: change-this-to-a-secure-random-string-in-production
+      APP_SECURITY_SECURE_COOKIES: "true"
+      APP_SECURITY_SECONDARY_VERIFICATION: "true"
+      APP_SECURITY_BOOTSTRAP_ADMIN_PASSWORD: change-this-Admin1!
     volumes:
       - app-storage:/app/storage
     depends_on:

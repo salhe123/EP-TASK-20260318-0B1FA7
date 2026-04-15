@@ -12,9 +12,6 @@ public class BookAppointmentRequest {
     @NotNull(message = "Slot ID must not be null")
     private Long slotId;
 
-    @NotNull(message = "Property ID must not be null")
-    private Long propertyId;
-
     @NotBlank(message = "Patient name must not be blank")
     private String patientName;
 

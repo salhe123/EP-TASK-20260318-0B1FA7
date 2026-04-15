@@ -99,8 +99,7 @@ class FinancialControllerTest extends BaseIntegrationTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.type", is("SERVICE_FEE")))
                 .andExpect(jsonPath("$.amount", is(500.00)))
-                .andExpect(jsonPath("$.status", is("RECORDED")))
-                .andExpect(jsonPath("$.idempotencyKey", is(key)));
+                .andExpect(jsonPath("$.status", is("RECORDED")));
     }
 
     @Test
@@ -122,7 +121,7 @@ class FinancialControllerTest extends BaseIntegrationTest {
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(body))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.idempotencyKey", is(key)));
+                .andExpect(jsonPath("$.id").isNumber());
 
         assertEquals(1, transactionRepository.count());
     }

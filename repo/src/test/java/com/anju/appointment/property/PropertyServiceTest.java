@@ -7,6 +7,7 @@ import com.anju.appointment.common.BusinessRuleException;
 import com.anju.appointment.common.ResourceNotFoundException;
 import com.anju.appointment.property.dto.PropertyRequest;
 import com.anju.appointment.property.dto.PropertyResponse;
+import com.anju.appointment.property.dto.PropertyUpdateRequest;
 import com.anju.appointment.property.entity.ComplianceStatus;
 import com.anju.appointment.property.entity.Property;
 import com.anju.appointment.property.entity.PropertyStatus;
@@ -33,6 +34,7 @@ import java.util.Optional;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
@@ -245,7 +247,7 @@ class PropertyServiceTest {
             when(propertyRepository.findById(PROPERTY_ID)).thenReturn(Optional.of(existing));
             when(propertyRepository.save(any(Property.class))).thenAnswer(inv -> inv.getArgument(0));
 
-            PropertyRequest request = new PropertyRequest();
+            PropertyUpdateRequest request = new PropertyUpdateRequest();
             request.setName("Updated Name");
             // type, address, description, capacity left null => not updated
 
@@ -273,8 +275,19 @@ class PropertyServiceTest {
             when(propertyRepository.findById(PROPERTY_ID)).thenReturn(Optional.of(existing));
             when(propertyRepository.save(any(Property.class))).thenAnswer(inv -> inv.getArgument(0));
 
-            PropertyRequest request = buildFullRequest();
+            PropertyUpdateRequest request = new PropertyUpdateRequest();
             request.setName("Fully Updated");
+            request.setType("OFFICE");
+            request.setAddress("456 Oak Ave");
+            request.setDescription("A new property");
+            request.setCapacity(20);
+            request.setComplianceStatus("COMPLIANT");
+            request.setComplianceNotes("Passed audit");
+            request.setRentalPricePerSlot(new BigDecimal("150.00"));
+            request.setDepositAmount(new BigDecimal("50.00"));
+            request.setMinBookingLeadHours(2);
+            request.setMaxBookingLeadDays(14);
+            request.setRentalRules("No smoking; no pets");
 
             PropertyResponse response = propertyService.updateProperty(PROPERTY_ID, request, USER_ID);
 
@@ -294,7 +307,7 @@ class PropertyServiceTest {
         void updateProperty_notFound_throwsResourceNotFoundException() {
             when(propertyRepository.findById(PROPERTY_ID)).thenReturn(Optional.empty());
 
-            PropertyRequest request = new PropertyRequest();
+            PropertyUpdateRequest request = new PropertyUpdateRequest();
             request.setName("Irrelevant");
 
             assertThrows(ResourceNotFoundException.class,
@@ -354,70 +367,87 @@ class PropertyServiceTest {
     }
 
     // -----------------------------------------------------------------------
-    // validateCompliance
+    // validateBookingEligibility
     // -----------------------------------------------------------------------
 
     @Nested
-    class ValidateCompliance {
+    class ValidateBookingEligibility {
 
         @Test
-        void validateCompliance_compliantProperty_passes() {
+        void compliantActiveProperty_passes() {
             Property property = buildProperty();
             property.setComplianceStatus(ComplianceStatus.COMPLIANT);
             property.setComplianceExpiresAt(LocalDate.now().plusYears(1));
 
-            propertyService.validateCompliance(property);
+            propertyService.validateBookingEligibility(property);
 
-            // No exception thrown; repository not called to update
             verify(propertyRepository, never()).save(any());
         }
 
         @Test
-        void validateCompliance_pendingReview_passes() {
+        void inactiveProperty_throwsBusinessRuleException() {
+            Property property = buildProperty();
+            property.setStatus(PropertyStatus.INACTIVE);
+            property.setComplianceStatus(ComplianceStatus.COMPLIANT);
+
+            BusinessRuleException ex = assertThrows(BusinessRuleException.class,
+                    () -> propertyService.validateBookingEligibility(property));
+            assertTrue(ex.getMessage().contains("not active"));
+        }
+
+        @Test
+        void maintenanceProperty_throwsBusinessRuleException() {
+            Property property = buildProperty();
+            property.setStatus(PropertyStatus.MAINTENANCE);
+            property.setComplianceStatus(ComplianceStatus.COMPLIANT);
+
+            BusinessRuleException ex = assertThrows(BusinessRuleException.class,
+                    () -> propertyService.validateBookingEligibility(property));
+            assertTrue(ex.getMessage().contains("not active"));
+        }
+
+        @Test
+        void pendingReview_throwsBusinessRuleException() {
             Property property = buildProperty();
             property.setComplianceStatus(ComplianceStatus.PENDING_REVIEW);
-            property.setComplianceExpiresAt(LocalDate.now().plusYears(1));
 
-            propertyService.validateCompliance(property);
-
-            verify(propertyRepository, never()).save(any());
+            BusinessRuleException ex = assertThrows(BusinessRuleException.class,
+                    () -> propertyService.validateBookingEligibility(property));
+            assertTrue(ex.getMessage().contains("PENDING_REVIEW"));
         }
 
         @Test
-        void validateCompliance_nullComplianceStatus_passes() {
+        void nullComplianceStatus_throwsBusinessRuleException() {
             Property property = buildProperty();
             property.setComplianceStatus(null);
-            property.setComplianceExpiresAt(null);
 
-            propertyService.validateCompliance(property);
-
-            verify(propertyRepository, never()).save(any());
+            BusinessRuleException ex = assertThrows(BusinessRuleException.class,
+                    () -> propertyService.validateBookingEligibility(property));
+            assertTrue(ex.getMessage().contains("unset"));
         }
 
         @Test
-        void validateCompliance_nonCompliant_throwsBusinessRuleException() {
+        void nonCompliant_throwsBusinessRuleException() {
             Property property = buildProperty();
             property.setComplianceStatus(ComplianceStatus.NON_COMPLIANT);
 
             BusinessRuleException ex = assertThrows(BusinessRuleException.class,
-                    () -> propertyService.validateCompliance(property));
-
-            assertEquals("Property is non-compliant and cannot be used for bookings", ex.getMessage());
+                    () -> propertyService.validateBookingEligibility(property));
+            assertTrue(ex.getMessage().contains("NON_COMPLIANT"));
         }
 
         @Test
-        void validateCompliance_expired_throwsBusinessRuleException() {
+        void expired_throwsBusinessRuleException() {
             Property property = buildProperty();
             property.setComplianceStatus(ComplianceStatus.EXPIRED);
 
             BusinessRuleException ex = assertThrows(BusinessRuleException.class,
-                    () -> propertyService.validateCompliance(property));
-
-            assertEquals("Property compliance has expired and must be renewed", ex.getMessage());
+                    () -> propertyService.validateBookingEligibility(property));
+            assertTrue(ex.getMessage().contains("EXPIRED"));
         }
 
         @Test
-        void validateCompliance_expiredDate_autoSetsExpiredStatusAndThrows() {
+        void expiredDate_autoSetsExpiredStatusAndThrows() {
             Property property = buildProperty();
             property.setComplianceStatus(ComplianceStatus.COMPLIANT);
             property.setComplianceExpiresAt(LocalDate.now().minusDays(1));
@@ -425,33 +455,32 @@ class PropertyServiceTest {
             when(propertyRepository.save(any(Property.class))).thenAnswer(inv -> inv.getArgument(0));
 
             BusinessRuleException ex = assertThrows(BusinessRuleException.class,
-                    () -> propertyService.validateCompliance(property));
+                    () -> propertyService.validateBookingEligibility(property));
 
-            assertEquals("Property compliance has expired and must be renewed", ex.getMessage());
+            assertTrue(ex.getMessage().contains("EXPIRED"));
             assertEquals(ComplianceStatus.EXPIRED, property.getComplianceStatus());
             verify(propertyRepository).save(property);
         }
 
         @Test
-        void validateCompliance_expiresAtNull_doesNotAutoExpire() {
+        void expiresAtNull_compliant_passes() {
             Property property = buildProperty();
             property.setComplianceStatus(ComplianceStatus.COMPLIANT);
             property.setComplianceExpiresAt(null);
 
-            propertyService.validateCompliance(property);
+            propertyService.validateBookingEligibility(property);
 
             assertEquals(ComplianceStatus.COMPLIANT, property.getComplianceStatus());
             verify(propertyRepository, never()).save(any());
         }
 
         @Test
-        void validateCompliance_expiresAtToday_doesNotAutoExpire() {
-            // isBefore(now) is false when the date equals today
+        void expiresAtToday_compliant_passes() {
             Property property = buildProperty();
             property.setComplianceStatus(ComplianceStatus.COMPLIANT);
             property.setComplianceExpiresAt(LocalDate.now());
 
-            propertyService.validateCompliance(property);
+            propertyService.validateBookingEligibility(property);
 
             assertEquals(ComplianceStatus.COMPLIANT, property.getComplianceStatus());
             verify(propertyRepository, never()).save(any());
@@ -515,7 +544,7 @@ class PropertyServiceTest {
             when(propertyRepository.findById(PROPERTY_ID)).thenReturn(Optional.of(existing));
             when(propertyRepository.save(any(Property.class))).thenAnswer(inv -> inv.getArgument(0));
 
-            PropertyRequest request = new PropertyRequest();
+            PropertyUpdateRequest request = new PropertyUpdateRequest();
             request.setName("Updated");
             // All extended fields left null
 

@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Run tests inside Docker — no local JDK or Maven required.
-# Uses the same base image as the production Dockerfile.
+# Uses the same Maven base image as the production Dockerfile.
 
 echo "Building test image and running tests in Docker..."
 docker build -f Dockerfile.test -t anju-tests . && \

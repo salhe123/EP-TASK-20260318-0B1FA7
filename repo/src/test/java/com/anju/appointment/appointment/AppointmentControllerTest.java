@@ -56,6 +56,7 @@ class AppointmentControllerTest extends BaseIntegrationTest {
         property.setAddress("Test Address");
         property.setCapacity(3);
         property.setStatus(PropertyStatus.ACTIVE);
+        property.setComplianceStatus(com.anju.appointment.property.entity.ComplianceStatus.COMPLIANT);
         property = propertyRepository.save(property);
     }
 
@@ -190,7 +191,7 @@ class AppointmentControllerTest extends BaseIntegrationTest {
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(body))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.idempotencyKey", is(idempotencyKey)));
+                .andExpect(jsonPath("$.id").isNumber());
 
         // Verify only one appointment was created
         assertEquals(1, appointmentRepository.count());
@@ -451,9 +452,9 @@ class AppointmentControllerTest extends BaseIntegrationTest {
 
     private String bookingJson(Long slotId, String idempotencyKey) {
         return String.format(
-                "{\"slotId\":%d,\"propertyId\":%d,\"patientName\":\"Li Wei\"," +
+                "{\"slotId\":%d,\"patientName\":\"Li Wei\"," +
                 "\"patientPhone\":\"13800138000\",\"serviceType\":\"GENERAL_CONSULTATION\"," +
                 "\"notes\":\"Test\",\"idempotencyKey\":\"%s\"}",
-                slotId, property.getId(), idempotencyKey);
+                slotId, idempotencyKey);
     }
 }

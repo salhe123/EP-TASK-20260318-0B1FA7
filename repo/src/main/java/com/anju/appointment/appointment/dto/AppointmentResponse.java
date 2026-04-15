@@ -14,7 +14,6 @@ public class AppointmentResponse {
     private Long id;
     private Long slotId;
     private Long propertyId;
-    private Long userId;
     private String patientName;
     private String patientPhone;
     private String serviceType;
@@ -23,7 +22,7 @@ public class AppointmentResponse {
     private int rescheduleCount;
     private String cancelReason;
     private String completionNotes;
-    private String idempotencyKey;
+    private Long assignedServiceStaffId;
     private LocalDateTime createdAt;
     private LocalDateTime updatedAt;
     private LocalDateTime expiresAt;
@@ -33,7 +32,6 @@ public class AppointmentResponse {
                 .id(appointment.getId())
                 .slotId(appointment.getSlotId())
                 .propertyId(appointment.getPropertyId())
-                .userId(appointment.getUserId())
                 .patientName(DataMaskingUtil.maskName(appointment.getPatientName()))
                 .patientPhone(DataMaskingUtil.maskPhone(appointment.getPatientPhone()))
                 .serviceType(appointment.getServiceType())
@@ -42,7 +40,7 @@ public class AppointmentResponse {
                 .rescheduleCount(appointment.getRescheduleCount())
                 .cancelReason(appointment.getCancelReason())
                 .completionNotes(appointment.getCompletionNotes())
-                .idempotencyKey(appointment.getIdempotencyKey())
+                .assignedServiceStaffId(appointment.getAssignedServiceStaffId())
                 .createdAt(appointment.getCreatedAt())
                 .updatedAt(appointment.getUpdatedAt())
                 .expiresAt(appointment.getExpiresAt())

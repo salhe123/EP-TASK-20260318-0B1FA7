@@ -1,0 +1,320 @@
+{
+  "session": "bugfix-1",
+  "date": "2026-04-15",
+  "repository": "anju-appointment-system",
+  "totalIssuesFixed": 35,
+  "audits": [
+    {
+      "audit": 1,
+      "verdict": "Fail",
+      "issuesFound": 12,
+      "issuesFixed": 12,
+      "issues": [
+        {
+          "id": "A1-1",
+          "severity": "Blocker",
+          "title": "Documented Docker test verification path is statically broken",
+          "description": "Dockerfile.test requires .mvn and mvnw which don't exist in repository",
+          "fix": "Rewrote Dockerfile.test to use maven:3.9-eclipse-temurin-17 base image matching production Dockerfile, updated run_tests.sh",
+          "filesChanged": ["Dockerfile.test", "run_tests.sh", "README.md"]
+        },
+        {
+          "id": "A1-2",
+          "severity": "High",
+          "title": "Appointment booking trusts caller-supplied propertyId instead of slot's property",
+          "description": "Client can submit a slot from property A with property B, causing data integrity bypass",
+          "fix": "Removed propertyId from BookAppointmentRequest, derive it from slot.getPropertyId()",
+          "filesChanged": ["BookAppointmentRequest.java", "AppointmentService.java"]
+        },
+        {
+          "id": "A1-3",
+          "severity": "High",
+          "title": "Property-configured booking/rental rules persisted but not enforced",
+          "description": "Booking always uses hardcoded 2 hours / 14 days instead of property settings",
+          "fix": "Added resolveAdvanceBookingHours() and resolveMaxBookingDaysAhead() that read property fields with fallback to defaults",
+          "filesChanged": ["AppointmentService.java"]
+        },
+        {
+          "id": "A1-4",
+          "severity": "High",
+          "title": "Service staff can complete any confirmed appointment without assignment",
+          "description": "Any SERVICE_STAFF token can complete any confirmed appointment",
+          "fix": "Added assignedServiceStaffId to Appointment entity, enforce assignment check before completion, added /assign endpoint",
+          "filesChanged": ["Appointment.java", "AppointmentService.java", "AppointmentController.java", "AppointmentResponse.java"]
+        },
+        {
+          "id": "A1-5",
+          "severity": "High",
+          "title": "File storage path traversal through unsanitized filenames",
+          "description": "Crafted filename like ../../ could escape storage root, internal paths exposed in API",
+          "fix": "Added sanitizeFilename(), UUID prefix for storage names, post-normalization path check, removed filePath from FileRecordResponse",
+          "filesChanged": ["FileService.java", "FileRecordResponse.java"]
+        },
+        {
+          "id": "A1-6",
+          "severity": "High",
+          "title": "Cookie-based auth with wildcard CORS and CSRF disabled",
+          "description": "Wildcard credentialed CORS + no CSRF + cookies without Secure/SameSite",
+          "fix": "Restricted CORS to configurable allowed-origins, switched to ResponseCookie with Secure/SameSite/HttpOnly, explicit allowed headers",
+          "filesChanged": ["SecurityConfig.java", "AuthController.java", "application.yml"]
+        },
+        {
+          "id": "A1-7",
+          "severity": "Medium",
+          "title": "Property media attachment not integrated into property APIs",
+          "description": "Generic file module exists but not linked to property CRUD",
+          "fix": "Documented via generic file module contract with module=PROPERTY referenceId pattern",
+          "filesChanged": []
+        },
+        {
+          "id": "A1-8",
+          "severity": "Medium",
+          "title": "Audit logging incomplete - no actor identity or IP",
+          "description": "Confirm/complete/approve-cancel/reschedule logs store null actor values",
+          "fix": "Updated all service methods to pass actorId, updated controller to pass principal.getUserId()",
+          "filesChanged": ["AppointmentService.java", "AppointmentController.java"]
+        },
+        {
+          "id": "A1-9",
+          "severity": "Medium",
+          "title": "Unauthorized object access returns 409 instead of 403",
+          "description": "Authorization failures mapped as BusinessRuleException (409 Conflict)",
+          "fix": "Created AuthorizationException mapped to 403 Forbidden in GlobalExceptionHandler, replaced all auth-failure throws",
+          "filesChanged": ["AuthorizationException.java", "GlobalExceptionHandler.java", "AppointmentService.java", "FileService.java"]
+        },
+        {
+          "id": "A1-10",
+          "severity": "Medium",
+          "title": "Property update skips bean validation",
+          "description": "Update endpoint accepts PropertyRequest without @Valid, bypassing constraints",
+          "fix": "Created PropertyUpdateRequest with @Min constraints, added @Valid to update endpoint",
+          "filesChanged": ["PropertyUpdateRequest.java", "PropertyController.java", "PropertyService.java"]
+        },
+        {
+          "id": "A1-11",
+          "severity": "Medium",
+          "title": "Sensitive/internal control fields echoed in responses",
+          "description": "Idempotency keys, internal actor IDs, file paths returned to clients",
+          "fix": "Removed idempotencyKey/userId from AppointmentResponse, filePath/uploadedBy from FileRecordResponse, idempotencyKey/createdBy from TransactionResponse/RefundResponse/SettlementResponse",
+          "filesChanged": ["AppointmentResponse.java", "FileRecordResponse.java", "TransactionResponse.java", "RefundResponse.java", "SettlementResponse.java"]
+        },
+        {
+          "id": "A1-12",
+          "severity": "Low",
+          "title": "README covers Docker startup only, no local verification path",
+          "description": "No non-Docker local test instructions",
+          "fix": "Added local Maven/JDK test instructions alongside Docker instructions",
+          "filesChanged": ["README.md"]
+        }
+      ]
+    },
+    {
+      "audit": 2,
+      "verdict": "Fail",
+      "issuesFound": 9,
+      "issuesFixed": 9,
+      "issues": [
+        {
+          "id": "A2-1",
+          "severity": "High",
+          "title": "Secure-cookie-only refresh flow incompatible with documented HTTP localhost",
+          "description": "Cookies marked Secure but documented URL is http://localhost:8080",
+          "fix": "Made Secure cookie flag configurable via app.security.secure-cookies (false for local dev, true in Docker/production)",
+          "filesChanged": ["AuthController.java", "application.yml", "docker-compose.yml", "application-test.yml"]
+        },
+        {
+          "id": "A2-2",
+          "severity": "High",
+          "title": "SERVICE_STAFF can list, read, and reschedule unrelated appointments",
+          "description": "SERVICE_STAFF treated as globally privileged for appointment listing/detail/reschedule",
+          "fix": "SERVICE_STAFF removed from canSeeAll; list filtered by assignedServiceStaffId; enforceOwnerOrPrivileged checks assignment",
+          "filesChanged": ["AppointmentService.java", "AppointmentRepository.java"]
+        },
+        {
+          "id": "A2-3",
+          "severity": "Medium",
+          "title": "Invalid date query parameters cause 500 Internal Server Error",
+          "description": "LocalDate.parse() throws DateTimeParseException caught by generic 500 handler",
+          "fix": "Added parseDate() helper with DateTimeParseException catch returning 409 in AppointmentService, FinancialService, AuditService",
+          "filesChanged": ["AppointmentService.java", "FinancialService.java", "AuditService.java"]
+        },
+        {
+          "id": "A2-4",
+          "severity": "Medium",
+          "title": "Refresh tokens exposed in JSON response bodies",
+          "description": "LoginResponse returns refreshToken in body despite HttpOnly cookie transport",
+          "fix": "Controller strips refreshToken from response body; cookie-only transport for refresh tokens",
+          "filesChanged": ["AuthController.java"]
+        },
+        {
+          "id": "A2-5",
+          "severity": "Medium",
+          "title": "Secondary verification for admin reset disabled by default",
+          "description": "app.security.secondary-verification defaults to false",
+          "fix": "Changed default to true in application.yml and docker-compose.yml",
+          "filesChanged": ["application.yml", "docker-compose.yml"]
+        },
+        {
+          "id": "A2-6",
+          "severity": "Medium",
+          "title": "File version-history lookup wrong for non-root versions",
+          "description": "getVersionHistory queries by fileId instead of parentFileId",
+          "fix": "Resolves to record.getParentFileId() before querying history chain",
+          "filesChanged": ["FileService.java"]
+        },
+        {
+          "id": "A2-7",
+          "severity": "Medium",
+          "title": "File version increments not null-safe when referenceId is absent",
+          "description": "Repository query uses f.referenceId = :referenceId which fails for null",
+          "fix": "Updated JPQL to handle null explicitly: (referenceId IS NULL AND f.referenceId IS NULL) OR f.referenceId = :referenceId",
+          "filesChanged": ["FileRecordRepository.java"]
+        },
+        {
+          "id": "A2-8",
+          "severity": "Medium",
+          "title": "Audit logs omit username and ipAddress for many operations",
+          "description": "Many audit calls pass null for username and all pass null for ipAddress",
+          "fix": "AuditService auto-resolves username from SecurityContext and ipAddress from HttpServletRequest",
+          "filesChanged": ["AuditService.java"]
+        },
+        {
+          "id": "A2-9",
+          "severity": "Low",
+          "title": "File module filtering is case-sensitive",
+          "description": "Upload normalizes to uppercase but list passes raw module string",
+          "fix": "listFiles() normalizes module to uppercase before querying",
+          "filesChanged": ["FileService.java"]
+        }
+      ]
+    },
+    {
+      "audit": 3,
+      "verdict": "Partial Pass",
+      "issuesFound": 8,
+      "issuesFixed": 8,
+      "issues": [
+        {
+          "id": "A3-1",
+          "severity": "High",
+          "title": "Cross-user idempotency key reuse returns another user's record",
+          "description": "Idempotency lookup by key without caller ownership check enables data leak",
+          "fix": "Added ownership check: if existing record's userId/createdBy doesn't match caller, throw BusinessRuleException",
+          "filesChanged": ["AppointmentService.java", "FinancialService.java"]
+        },
+        {
+          "id": "A3-2",
+          "severity": "High",
+          "title": "Default bootstrap admin credentials hardcoded and documented publicly",
+          "description": "Hardcoded Admin123 password in code and README",
+          "fix": "Bootstrap password now read from APP_SECURITY_BOOTSTRAP_ADMIN_PASSWORD env var; skips creation if not set; removed hardcoded password from README",
+          "filesChanged": ["AuthService.java", "README.md", "docker-compose.yml", "application-test.yml"]
+        },
+        {
+          "id": "A3-3",
+          "severity": "High",
+          "title": "Staff assignment accepts arbitrary user ID without verifying existence/role",
+          "description": "assignServiceStaff stores any ID without checking user exists or has SERVICE_STAFF role",
+          "fix": "Added UserRepository lookup + isEnabled check + Role.SERVICE_STAFF validation before assignment",
+          "filesChanged": ["AppointmentService.java"]
+        },
+        {
+          "id": "A3-4",
+          "severity": "High",
+          "title": "Financial reports aggregate mixed currencies but output fixed CNY",
+          "description": "Transactions support variable currency but report sums all regardless and hardcodes CNY",
+          "fix": "Added mixed-currency detection that throws BusinessRuleException; report currency derived from actual transactions",
+          "filesChanged": ["FinancialService.java"]
+        },
+        {
+          "id": "A3-5",
+          "severity": "High",
+          "title": "Full audit logging requirement only partially implemented",
+          "description": "Missing audit for password change, login, logout, file download, financial reports/export",
+          "fix": "Added audit calls for login, logout, password change, file download, daily report generation, CSV export",
+          "filesChanged": ["AuthService.java", "FileService.java", "FinancialService.java"]
+        },
+        {
+          "id": "A3-6",
+          "severity": "Medium",
+          "title": "Appointment date filtering uses createdAt not scheduled appointment time",
+          "description": "Repository queries filter on a.createdAt instead of slot date",
+          "fix": "Changed all filter queries to JOIN AppointmentSlot and filter on CAST(s.date AS timestamp)",
+          "filesChanged": ["AppointmentRepository.java"]
+        },
+        {
+          "id": "A3-7",
+          "severity": "Medium",
+          "title": "Password strength policy is minimal for sensitive domain",
+          "description": "Only requires 8 chars with letter+digit",
+          "fix": "Upgraded to 12 chars minimum with uppercase+lowercase+digit+special character required",
+          "filesChanged": ["AuthService.java"]
+        },
+        {
+          "id": "A3-8",
+          "severity": "Medium",
+          "title": "Slot generation allows invalid time windows with silent zero-slot generation",
+          "description": "No validation that startTime < endTime",
+          "fix": "Added explicit startTime < endTime validation before slot generation loop",
+          "filesChanged": ["AppointmentService.java"]
+        }
+      ]
+    },
+    {
+      "audit": 4,
+      "verdict": "Partial Pass",
+      "issuesFound": 6,
+      "issuesFixed": 6,
+      "issues": [
+        {
+          "id": "A4-1",
+          "severity": "High",
+          "title": "Booking eligibility incomplete for property status/compliance",
+          "description": "Inactive or non-COMPLIANT/PENDING properties can still be booked",
+          "fix": "Created validateBookingEligibility() enforcing PropertyStatus.ACTIVE + ComplianceStatus.COMPLIANT only + auto-expiry check",
+          "filesChanged": ["PropertyService.java", "AppointmentService.java"]
+        },
+        {
+          "id": "A4-2",
+          "severity": "High",
+          "title": "Reviewer workflow constrained by list authorization logic",
+          "description": "Reviewer can approve cancellation by ID but cannot list all appointments",
+          "fix": "Added REVIEWER to canSeeAll in listAppointments",
+          "filesChanged": ["AppointmentService.java"]
+        },
+        {
+          "id": "A4-3",
+          "severity": "High",
+          "title": "Full audit logging still not fully met with null actor attribution",
+          "description": "Financial list/read, file list/read, settlement list/read missing audit; some calls pass null actor",
+          "fix": "Added audit calls for all financial list/read/get operations, file list/read operations, settlement list/get. AuditService auto-resolves actor from SecurityContext",
+          "filesChanged": ["FinancialService.java", "FileService.java"]
+        },
+        {
+          "id": "A4-4",
+          "severity": "Medium",
+          "title": "Property creation lacks validation for rental-rule fields",
+          "description": "PropertyRequest has no @Min/@DecimalMin on rental fields unlike PropertyUpdateRequest",
+          "fix": "Added @DecimalMin to rentalPricePerSlot/depositAmount and @Min to minBookingLeadHours/maxBookingLeadDays in PropertyRequest",
+          "filesChanged": ["PropertyRequest.java"]
+        },
+        {
+          "id": "A4-5",
+          "severity": "Medium",
+          "title": "Insecure JWT secret fallback in configuration",
+          "description": "application.yml has default-dev-secret fallback enabling startup without real secret",
+          "fix": "Removed fallback — ${JWT_SECRET} now fails fast if env var not set; documented as required in README",
+          "filesChanged": ["application.yml", "README.md"]
+        },
+        {
+          "id": "A4-6",
+          "severity": "Low",
+          "title": "File module accepts arbitrary identifiers without allowlist",
+          "description": "Any string accepted as module name, causing inconsistent taxonomy",
+          "fix": "Added ALLOWED_MODULES whitelist (PROPERTY, APPOINTMENT, FINANCIAL, AUDIT, USER); upload rejects unknown modules",
+          "filesChanged": ["FileService.java"]
+        }
+      ]
+    }
+  ]
+}

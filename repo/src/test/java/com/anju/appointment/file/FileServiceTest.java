@@ -1,6 +1,7 @@
 package com.anju.appointment.file;
 
 import com.anju.appointment.audit.service.AuditService;
+import com.anju.appointment.common.AuthorizationException;
 import com.anju.appointment.common.BusinessRuleException;
 import com.anju.appointment.common.ResourceNotFoundException;
 import com.anju.appointment.file.dto.FileRecordResponse;
@@ -289,7 +290,7 @@ class FileServiceTest {
             when(fileRecordRepository.findById(10L)).thenReturn(Optional.of(record));
 
             assertThatThrownBy(() -> fileService.getFileRecord(10L, OTHER_USER_ID, "SERVICE_STAFF"))
-                    .isInstanceOf(BusinessRuleException.class)
+                    .isInstanceOf(AuthorizationException.class)
                     .hasMessageContaining("Not authorized to access this file");
         }
     }
@@ -327,7 +328,7 @@ class FileServiceTest {
             FileRecord record = buildFileRecord(10L, "doc.pdf", USER_ID, 1, 10L);
 
             assertThatThrownBy(() -> fileService.enforceFileAccess(record, OTHER_USER_ID, "SERVICE_STAFF"))
-                    .isInstanceOf(BusinessRuleException.class)
+                    .isInstanceOf(AuthorizationException.class)
                     .hasMessageContaining("Not authorized to access this file");
         }
     }
@@ -396,8 +397,105 @@ class FileServiceTest {
             when(fileRecordRepository.findById(10L)).thenReturn(Optional.of(record));
 
             assertThatThrownBy(() -> fileService.getVersionHistory(10L, OTHER_USER_ID, "FINANCE"))
-                    .isInstanceOf(BusinessRuleException.class)
+                    .isInstanceOf(AuthorizationException.class)
                     .hasMessageContaining("Not authorized to access this file");
+        }
+    }
+
+    // ---------------------------------------------------------------------------
+    // Path traversal defense
+    // ---------------------------------------------------------------------------
+
+    @Nested
+    class PathTraversalDefense {
+
+        @Test
+        void traversalFilename_isStripped() throws IOException {
+            stubMultipartFile("../../etc/passwd");
+
+            when(fileRecordRepository.findMaxVersion("PROPERTY", 100L, "passwd")).thenReturn(null);
+
+            FileRecord saved = buildFileRecord(50L, "passwd", USER_ID, 1, null);
+            FileRecord savedWithParent = buildFileRecord(50L, "passwd", USER_ID, 1, 50L);
+            when(fileRecordRepository.save(any(FileRecord.class)))
+                    .thenReturn(saved)
+                    .thenReturn(savedWithParent);
+
+            FileRecordResponse response = fileService.uploadFile(
+                    multipartFile, "property", 100L, "Traversal test", USER_ID);
+
+            assertThat(response).isNotNull();
+            verify(fileRecordRepository, times(2)).save(fileRecordCaptor.capture());
+            FileRecord captured = fileRecordCaptor.getAllValues().get(0);
+            assertThat(captured.getFileName()).isEqualTo("passwd");
+        }
+
+        @Test
+        void backslashTraversal_isStripped() throws IOException {
+            stubMultipartFile("..\\..\\windows\\system32\\config");
+
+            when(fileRecordRepository.findMaxVersion("PROPERTY", 100L, "config")).thenReturn(null);
+
+            FileRecord saved = buildFileRecord(51L, "config", USER_ID, 1, null);
+            FileRecord savedWithParent = buildFileRecord(51L, "config", USER_ID, 1, 51L);
+            when(fileRecordRepository.save(any(FileRecord.class)))
+                    .thenReturn(saved)
+                    .thenReturn(savedWithParent);
+
+            FileRecordResponse response = fileService.uploadFile(
+                    multipartFile, "property", 100L, "Backslash test", USER_ID);
+
+            assertThat(response).isNotNull();
+        }
+    }
+
+    // ---------------------------------------------------------------------------
+    // Module allowlist validation
+    // ---------------------------------------------------------------------------
+
+    @Nested
+    class ModuleAllowlist {
+
+        @Test
+        void validModule_accepted() throws IOException {
+            stubMultipartFile("doc.pdf");
+
+            when(fileRecordRepository.findMaxVersion("PROPERTY", 100L, "doc.pdf")).thenReturn(null);
+            FileRecord saved = buildFileRecord(60L, "doc.pdf", USER_ID, 1, null);
+            FileRecord savedWithParent = buildFileRecord(60L, "doc.pdf", USER_ID, 1, 60L);
+            when(fileRecordRepository.save(any(FileRecord.class)))
+                    .thenReturn(saved)
+                    .thenReturn(savedWithParent);
+
+            FileRecordResponse response = fileService.uploadFile(
+                    multipartFile, "property", 100L, "Valid module", USER_ID);
+            assertThat(response).isNotNull();
+        }
+
+        @Test
+        void invalidModule_rejected() {
+            when(multipartFile.isEmpty()).thenReturn(false);
+
+            assertThatThrownBy(() ->
+                    fileService.uploadFile(multipartFile, "HACKING", 100L, "Invalid module", USER_ID))
+                    .isInstanceOf(BusinessRuleException.class)
+                    .hasMessageContaining("Invalid file module");
+        }
+
+        @Test
+        void caseInsensitiveModule_accepted() throws IOException {
+            stubMultipartFile("doc.pdf");
+
+            when(fileRecordRepository.findMaxVersion("APPOINTMENT", 100L, "doc.pdf")).thenReturn(null);
+            FileRecord saved = buildFileRecord(61L, "doc.pdf", USER_ID, 1, null);
+            FileRecord savedWithParent = buildFileRecord(61L, "doc.pdf", USER_ID, 1, 61L);
+            when(fileRecordRepository.save(any(FileRecord.class)))
+                    .thenReturn(saved)
+                    .thenReturn(savedWithParent);
+
+            FileRecordResponse response = fileService.uploadFile(
+                    multipartFile, "appointment", 100L, "Case test", USER_ID);
+            assertThat(response).isNotNull();
         }
     }
 }

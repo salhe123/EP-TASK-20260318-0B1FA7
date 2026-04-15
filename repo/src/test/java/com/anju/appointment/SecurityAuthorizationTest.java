@@ -79,6 +79,7 @@ class SecurityAuthorizationTest extends BaseIntegrationTest {
         property.setAddress("Test Address");
         property.setCapacity(3);
         property.setStatus(PropertyStatus.ACTIVE);
+        property.setComplianceStatus(com.anju.appointment.property.entity.ComplianceStatus.COMPLIANT);
         property = propertyRepository.save(property);
     }
 
@@ -124,18 +125,18 @@ class SecurityAuthorizationTest extends BaseIntegrationTest {
     }
 
     @Test
-    void getAppointment_nonOwnerNonPrivileged_returns409() throws Exception {
+    void getAppointment_nonOwnerNonPrivileged_returns403() throws Exception {
         Appointment appointment = createAppointment(dispatcherUser.getId());
 
         mockMvc.perform(get("/api/appointments/" + appointment.getId())
                         .header("Authorization", "Bearer " + financeToken))
-                .andExpect(status().isConflict())
+                .andExpect(status().isForbidden())
                 .andExpect(jsonPath("$.message").value(
                         org.hamcrest.Matchers.containsString("Not authorized")));
     }
 
     @Test
-    void rescheduleAppointment_nonOwnerNonPrivileged_returns409() throws Exception {
+    void rescheduleAppointment_nonOwnerNonPrivileged_returns403() throws Exception {
         AppointmentSlot slot = createFutureSlot();
         Appointment appointment = createAppointmentWithSlot(slot, dispatcherUser.getId());
         AppointmentSlot newSlot = createFutureSlot();
@@ -144,7 +145,7 @@ class SecurityAuthorizationTest extends BaseIntegrationTest {
                         .header("Authorization", "Bearer " + financeToken)
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"newSlotId\":" + newSlot.getId() + ",\"reason\":\"Conflict\"}"))
-                .andExpect(status().isConflict())
+                .andExpect(status().isForbidden())
                 .andExpect(jsonPath("$.message").value(
                         org.hamcrest.Matchers.containsString("Not authorized")));
     }
@@ -197,7 +198,7 @@ class SecurityAuthorizationTest extends BaseIntegrationTest {
     }
 
     @Test
-    void downloadFile_nonOwnerNonPrivileged_returns409() throws Exception {
+    void downloadFile_nonOwnerNonPrivileged_returns403() throws Exception {
         // Admin uploads a file
         MockMultipartFile file = new MockMultipartFile(
                 "file", "secret.pdf", "application/pdf", "secret content".getBytes());
@@ -212,13 +213,13 @@ class SecurityAuthorizationTest extends BaseIntegrationTest {
         // Finance user tries to download — should be denied
         mockMvc.perform(get("/api/files/" + fileId + "/download")
                         .header("Authorization", "Bearer " + financeToken))
-                .andExpect(status().isConflict())
+                .andExpect(status().isForbidden())
                 .andExpect(jsonPath("$.message").value(
                         org.hamcrest.Matchers.containsString("Not authorized")));
     }
 
     @Test
-    void getFileRecord_nonOwnerNonPrivileged_returns409() throws Exception {
+    void getFileRecord_nonOwnerNonPrivileged_returns403() throws Exception {
         MockMultipartFile file = new MockMultipartFile(
                 "file", "doc.pdf", "application/pdf", "content".getBytes());
         String response = mockMvc.perform(multipart("/api/files/upload")
@@ -231,33 +232,41 @@ class SecurityAuthorizationTest extends BaseIntegrationTest {
 
         mockMvc.perform(get("/api/files/" + fileId)
                         .header("Authorization", "Bearer " + financeToken))
-                .andExpect(status().isConflict());
+                .andExpect(status().isForbidden());
     }
 
     // --- Refresh token flow ---
 
     @Test
     void refreshToken_worksWithoutAccessToken() throws Exception {
-        // Login to get refresh token from response body
+        // Clear any existing tokens to avoid unique constraint collision
+        refreshTokenRepository.deleteAll();
+
+        // Login to get refresh token from Set-Cookie header
         var loginResult = mockMvc.perform(post("/api/auth/login")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"username\":\"admin\",\"password\":\"Admin123\"}"))
                 .andExpect(status().isOk())
                 .andReturn();
 
-        String loginBody = loginResult.getResponse().getContentAsString();
-        String refreshToken = objectMapper.readTree(loginBody).get("refreshToken").asText();
+        // Extract refresh token from Set-Cookie header
+        String refreshTokenValue = null;
+        for (String header : loginResult.getResponse().getHeaders("Set-Cookie")) {
+            if (header.startsWith("refreshToken=")) {
+                refreshTokenValue = header.split(";")[0].substring("refreshToken=".length());
+                break;
+            }
+        }
+        assertFalse(refreshTokenValue == null || refreshTokenValue.isEmpty(),
+                "Expected refreshToken in Set-Cookie header");
 
-        // Also get the refreshToken cookie set by the login response
-        Cookie refreshCookie = loginResult.getResponse().getCookie("refreshToken");
-        Cookie cookieToSend = refreshCookie != null ? refreshCookie : new Cookie("refreshToken", refreshToken);
+        Cookie cookieToSend = new Cookie("refreshToken", refreshTokenValue);
 
         // Use refresh token cookie without any access token header
         mockMvc.perform(post("/api/auth/refresh")
                         .cookie(cookieToSend))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.accessToken", notNullValue()))
-                .andExpect(jsonPath("$.refreshToken", notNullValue()));
+                .andExpect(jsonPath("$.accessToken", notNullValue()));
     }
 
     // --- Overlapping booking conflict detection ---
@@ -349,7 +358,7 @@ class SecurityAuthorizationTest extends BaseIntegrationTest {
 
     @Test
     void userManagement_generatesAuditLog() throws Exception {
-        String body = "{\"username\":\"audituser\",\"password\":\"AuditPass1\"," +
+        String body = "{\"username\":\"audituser\",\"password\":\"AuditPass1!xx\"," +
                 "\"fullName\":\"Audit User\",\"role\":\"FINANCE\"," +
                 "\"phone\":\"13800138000\",\"email\":\"audit@test.com\"}";
 
@@ -456,23 +465,45 @@ class SecurityAuthorizationTest extends BaseIntegrationTest {
     // --- SERVICE_STAFF role ---
 
     @Test
-    void serviceStaff_canCompleteAppointment() throws Exception {
+    void serviceStaff_canCompleteAssignedAppointment() throws Exception {
         com.anju.appointment.auth.entity.User staffUser = createUser(
                 "staff1", "StaffPass1", "Staff Member",
                 com.anju.appointment.auth.entity.Role.SERVICE_STAFF);
         String staffToken = generateToken(staffUser);
 
         AppointmentSlot slot = createFutureSlot();
-        // createAppointmentWithSlot already creates with CONFIRMED status
         Appointment appointment = createAppointmentWithSlot(slot, dispatcherUser.getId());
+        // Assign to staff member
+        appointment.setAssignedServiceStaffId(staffUser.getId());
+        appointment = appointmentRepository.save(appointment);
 
-        // Staff completes the already-confirmed appointment
+        // Staff completes the assigned appointment
         mockMvc.perform(put("/api/appointments/" + appointment.getId() + "/complete")
                         .header("Authorization", "Bearer " + staffToken)
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"completionNotes\":\"Service delivered\"}"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.status", is("COMPLETED")));
+    }
+
+    @Test
+    void serviceStaff_cannotCompleteUnassignedAppointment() throws Exception {
+        com.anju.appointment.auth.entity.User staffUser = createUser(
+                "staff2", "StaffPass2", "Staff Member 2",
+                com.anju.appointment.auth.entity.Role.SERVICE_STAFF);
+        String staffToken = generateToken(staffUser);
+
+        AppointmentSlot slot = createFutureSlot();
+        Appointment appointment = createAppointmentWithSlot(slot, dispatcherUser.getId());
+        // Not assigned to this staff member
+
+        mockMvc.perform(put("/api/appointments/" + appointment.getId() + "/complete")
+                        .header("Authorization", "Bearer " + staffToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"completionNotes\":\"Service delivered\"}"))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.message").value(
+                        org.hamcrest.Matchers.containsString("not assigned")));
     }
 
     // --- Helpers ---
@@ -510,11 +541,91 @@ class SecurityAuthorizationTest extends BaseIntegrationTest {
         return appointmentRepository.save(appointment);
     }
 
+    // --- Reviewer can list all appointments ---
+
+    @Test
+    void reviewer_canListAllAppointments() throws Exception {
+        // Create an appointment owned by dispatcher
+        createAppointment(dispatcherUser.getId());
+
+        // Reviewer should see all appointments
+        mockMvc.perform(get("/api/appointments")
+                        .header("Authorization", "Bearer " + reviewerToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.totalElements").value(
+                        org.hamcrest.Matchers.greaterThanOrEqualTo(1)));
+    }
+
+    // --- Cross-user idempotency key rejection ---
+
+    @Test
+    void bookAppointment_sameIdempotencyKeyDifferentUser_returns409() throws Exception {
+        AppointmentSlot slot = createFutureSlot();
+        String sharedKey = UUID.randomUUID().toString();
+        String body = bookingJson(slot.getId(), sharedKey);
+
+        // First user books
+        mockMvc.perform(post("/api/appointments")
+                        .header("Authorization", "Bearer " + dispatcherToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(body))
+                .andExpect(status().isOk());
+
+        // Different user tries same key
+        mockMvc.perform(post("/api/appointments")
+                        .header("Authorization", "Bearer " + reviewerToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(body))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.message").value(
+                        org.hamcrest.Matchers.containsString("Idempotency key already used")));
+    }
+
+    // --- Booking rejected for inactive property ---
+
+    @Test
+    void bookAppointment_inactiveProperty_returns409() throws Exception {
+        property.setStatus(com.anju.appointment.property.entity.PropertyStatus.INACTIVE);
+        property = propertyRepository.save(property);
+
+        AppointmentSlot slot = createFutureSlot();
+        String body = bookingJson(slot.getId(), UUID.randomUUID().toString());
+
+        mockMvc.perform(post("/api/appointments")
+                        .header("Authorization", "Bearer " + dispatcherToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(body))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.message").value(
+                        org.hamcrest.Matchers.containsString("not active")));
+    }
+
+    // --- Booking rejected for non-compliant property ---
+
+    @Test
+    void bookAppointment_pendingReviewProperty_returns409() throws Exception {
+        property.setComplianceStatus(com.anju.appointment.property.entity.ComplianceStatus.PENDING_REVIEW);
+        property = propertyRepository.save(property);
+
+        AppointmentSlot slot = createFutureSlot();
+        String body = bookingJson(slot.getId(), UUID.randomUUID().toString());
+
+        mockMvc.perform(post("/api/appointments")
+                        .header("Authorization", "Bearer " + dispatcherToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(body))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.message").value(
+                        org.hamcrest.Matchers.containsString("PENDING_REVIEW")));
+    }
+
+    // --- Helpers ---
+
     private String bookingJson(Long slotId, String idempotencyKey) {
         return String.format(
-                "{\"slotId\":%d,\"propertyId\":%d,\"patientName\":\"Li Wei\"," +
+                "{\"slotId\":%d,\"patientName\":\"Li Wei\"," +
                 "\"patientPhone\":\"13800138000\",\"serviceType\":\"GENERAL_CONSULTATION\"," +
                 "\"notes\":\"Test\",\"idempotencyKey\":\"%s\"}",
-                slotId, property.getId(), idempotencyKey);
+                slotId, idempotencyKey);
     }
 }

@@ -11,6 +11,10 @@ import com.anju.appointment.appointment.entity.AppointmentStatus;
 import com.anju.appointment.appointment.repository.AppointmentRepository;
 import com.anju.appointment.appointment.repository.AppointmentSlotRepository;
 import com.anju.appointment.audit.service.AuditService;
+import com.anju.appointment.auth.entity.Role;
+import com.anju.appointment.auth.entity.User;
+import com.anju.appointment.auth.repository.UserRepository;
+import com.anju.appointment.common.AuthorizationException;
 import com.anju.appointment.common.BusinessRuleException;
 import com.anju.appointment.common.ResourceNotFoundException;
 import com.anju.appointment.property.entity.Property;
@@ -27,6 +31,7 @@ import org.springframework.transaction.annotation.Transactional;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
+import java.time.format.DateTimeParseException;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.List;
@@ -38,31 +43,38 @@ public class AppointmentService {
 
     private static final Logger log = LoggerFactory.getLogger(AppointmentService.class);
     private static final Set<Integer> ALLOWED_DURATIONS = Set.of(15, 30, 60, 90);
-    private static final int ADVANCE_BOOKING_HOURS = 2;
-    private static final int MAX_BOOKING_DAYS_AHEAD = 14;
+    private static final int DEFAULT_ADVANCE_BOOKING_HOURS = 2;
+    private static final int DEFAULT_MAX_BOOKING_DAYS_AHEAD = 14;
     private static final int EXPIRY_MINUTES = 15;
-    private static final int MAX_RESCHEDULES = 2;
+    private static final int DEFAULT_MAX_RESCHEDULES = 2;
     private static final int LATE_CANCEL_THRESHOLD_MINUTES = 60;
 
     private final AppointmentSlotRepository slotRepository;
     private final AppointmentRepository appointmentRepository;
     private final PropertyService propertyService;
     private final AuditService auditService;
+    private final UserRepository userRepository;
 
     public AppointmentService(AppointmentSlotRepository slotRepository,
                               AppointmentRepository appointmentRepository,
                               PropertyService propertyService,
-                              AuditService auditService) {
+                              AuditService auditService,
+                              UserRepository userRepository) {
         this.slotRepository = slotRepository;
         this.appointmentRepository = appointmentRepository;
         this.propertyService = propertyService;
         this.auditService = auditService;
+        this.userRepository = userRepository;
     }
 
     @Transactional
     public SlotGenerateResponse generateSlots(SlotGenerateRequest request) {
         if (!ALLOWED_DURATIONS.contains(request.getSlotDuration())) {
             throw new BusinessRuleException("Slot duration must be one of: 15, 30, 60, 90 minutes");
+        }
+
+        if (request.getStartTime().compareTo(request.getEndTime()) >= 0) {
+            throw new BusinessRuleException("Start time must be before end time");
         }
 
         Property property = propertyService.findPropertyOrThrow(request.getPropertyId());
@@ -107,24 +119,33 @@ public class AppointmentService {
     public AppointmentResponse bookAppointment(BookAppointmentRequest request, Long userId) {
         Optional<Appointment> existing = appointmentRepository.findByIdempotencyKey(request.getIdempotencyKey());
         if (existing.isPresent()) {
+            if (!existing.get().getUserId().equals(userId)) {
+                throw new BusinessRuleException("Idempotency key already used");
+            }
             return AppointmentResponse.fromEntity(existing.get());
         }
 
         AppointmentSlot slot = slotRepository.findById(request.getSlotId())
                 .orElseThrow(() -> new ResourceNotFoundException("Slot not found with id: " + request.getSlotId()));
 
-        Property property = propertyService.findPropertyOrThrow(request.getPropertyId());
-        propertyService.validateCompliance(property);
+        // Derive propertyId from the slot — never trust client-supplied propertyId
+        Long propertyId = slot.getPropertyId();
+
+        Property property = propertyService.findPropertyOrThrow(propertyId);
+        propertyService.validateBookingEligibility(property);
+
+        int advanceHours = resolveAdvanceBookingHours(property);
+        int maxDaysAhead = resolveMaxBookingDaysAhead(property);
 
         LocalDateTime appointmentTime = LocalDateTime.of(slot.getDate(), slot.getStartTime());
         LocalDateTime now = LocalDateTime.now();
 
-        if (appointmentTime.isBefore(now.plusHours(ADVANCE_BOOKING_HOURS))) {
-            throw new BusinessRuleException("Appointment must be at least " + ADVANCE_BOOKING_HOURS + " hours in the future");
+        if (appointmentTime.isBefore(now.plusHours(advanceHours))) {
+            throw new BusinessRuleException("Appointment must be at least " + advanceHours + " hours in the future");
         }
 
-        if (slot.getDate().isAfter(LocalDate.now().plusDays(MAX_BOOKING_DAYS_AHEAD))) {
-            throw new BusinessRuleException("Cannot book more than " + MAX_BOOKING_DAYS_AHEAD + " days ahead");
+        if (slot.getDate().isAfter(LocalDate.now().plusDays(maxDaysAhead))) {
+            throw new BusinessRuleException("Cannot book more than " + maxDaysAhead + " days ahead");
         }
 
         if (slot.getBookedCount() >= slot.getCapacity()) {
@@ -147,7 +168,7 @@ public class AppointmentService {
 
         Appointment appointment = new Appointment();
         appointment.setSlotId(request.getSlotId());
-        appointment.setPropertyId(request.getPropertyId());
+        appointment.setPropertyId(propertyId);
         appointment.setUserId(userId);
         appointment.setPatientName(request.getPatientName());
         appointment.setPatientPhone(request.getPatientPhone());
@@ -177,14 +198,17 @@ public class AppointmentService {
             }
         }
 
-        LocalDateTime from = dateFrom != null ? LocalDate.parse(dateFrom).atStartOfDay() : null;
-        LocalDateTime to = dateTo != null ? LocalDate.parse(dateTo).atTime(23, 59, 59) : null;
+        LocalDateTime from = parseDate(dateFrom, true);
+        LocalDateTime to = parseDate(dateTo, false);
 
-        boolean canSeeAll = "ADMIN".equals(role) || "DISPATCHER".equals(role) || "SERVICE_STAFF".equals(role);
+        boolean canSeeAll = "ADMIN".equals(role) || "DISPATCHER".equals(role) || "REVIEWER".equals(role);
 
         Page<Appointment> page;
         if (canSeeAll) {
             page = appointmentRepository.findByFilters(propertyId, status, patientName, from, to, pageable);
+        } else if ("SERVICE_STAFF".equals(role)) {
+            // Service staff can only see appointments assigned to them
+            page = appointmentRepository.findByAssignedStaffAndFilters(userId, propertyId, status, patientName, from, to, pageable);
         } else {
             page = appointmentRepository.findByUserIdAndFilters(userId, propertyId, status, patientName, from, to, pageable);
         }
@@ -199,7 +223,7 @@ public class AppointmentService {
     }
 
     @Transactional
-    public AppointmentResponse confirmAppointment(Long id) {
+    public AppointmentResponse confirmAppointment(Long id, Long actorId) {
         Appointment appointment = findAppointmentOrThrow(id);
 
         if (appointment.getStatus() != AppointmentStatus.CREATED) {
@@ -212,24 +236,56 @@ public class AppointmentService {
 
         appointment.setStatus(AppointmentStatus.CONFIRMED);
         appointment = appointmentRepository.save(appointment);
-        auditService.log(null, null, "APPOINTMENT", "STATE_CHANGE",
+        auditService.log(actorId, null, "APPOINTMENT", "STATE_CHANGE",
                 "Appointment", appointment.getId(), "Confirmed appointment", null);
         return AppointmentResponse.fromEntity(appointment);
     }
 
     @Transactional
-    public AppointmentResponse completeAppointment(Long id, String completionNotes) {
+    public AppointmentResponse completeAppointment(Long id, String completionNotes, Long actorId, String role) {
         Appointment appointment = findAppointmentOrThrow(id);
 
         if (appointment.getStatus() != AppointmentStatus.CONFIRMED) {
             throw new BusinessRuleException("Appointment is not in CONFIRMED status");
         }
 
+        // Service staff can only complete appointments assigned to them
+        if ("SERVICE_STAFF".equals(role)) {
+            if (appointment.getAssignedServiceStaffId() == null || !appointment.getAssignedServiceStaffId().equals(actorId)) {
+                throw new AuthorizationException("Not authorized to complete this appointment — not assigned to you");
+            }
+        }
+
         appointment.setStatus(AppointmentStatus.COMPLETED);
         appointment.setCompletionNotes(completionNotes);
         appointment = appointmentRepository.save(appointment);
-        auditService.log(null, null, "APPOINTMENT", "STATE_CHANGE",
+        auditService.log(actorId, null, "APPOINTMENT", "STATE_CHANGE",
                 "Appointment", appointment.getId(), "Completed appointment", null);
+        return AppointmentResponse.fromEntity(appointment);
+    }
+
+    @Transactional
+    public AppointmentResponse assignServiceStaff(Long appointmentId, Long serviceStaffId, Long actorId) {
+        Appointment appointment = findAppointmentOrThrow(appointmentId);
+
+        if (appointment.getStatus() != AppointmentStatus.CONFIRMED) {
+            throw new BusinessRuleException("Appointment must be in CONFIRMED status to assign staff");
+        }
+
+        User staffUser = userRepository.findById(serviceStaffId)
+                .orElseThrow(() -> new ResourceNotFoundException("User not found with id: " + serviceStaffId));
+        if (!staffUser.isEnabled()) {
+            throw new BusinessRuleException("Target user is disabled");
+        }
+        if (staffUser.getRole() != Role.SERVICE_STAFF) {
+            throw new BusinessRuleException("Target user does not have SERVICE_STAFF role");
+        }
+
+        appointment.setAssignedServiceStaffId(serviceStaffId);
+        appointment = appointmentRepository.save(appointment);
+        auditService.log(actorId, null, "APPOINTMENT", "ASSIGN",
+                "Appointment", appointment.getId(),
+                "Assigned service staff " + serviceStaffId, null);
         return AppointmentResponse.fromEntity(appointment);
     }
 
@@ -250,7 +306,7 @@ public class AppointmentService {
         boolean isOwner = appointment.getUserId().equals(userId);
         boolean isPrivileged = "ADMIN".equals(role) || "DISPATCHER".equals(role);
         if (!isOwner && !isPrivileged) {
-            throw new BusinessRuleException("Not authorized to cancel this appointment");
+            throw new AuthorizationException("Not authorized to cancel this appointment");
         }
 
         appointment.setCancelReason(reason);
@@ -276,7 +332,7 @@ public class AppointmentService {
     }
 
     @Transactional
-    public AppointmentResponse approveCancellation(Long id, String reason) {
+    public AppointmentResponse approveCancellation(Long id, String reason, Long actorId) {
         Appointment appointment = findAppointmentOrThrow(id);
 
         if (appointment.getStatus() != AppointmentStatus.EXCEPTION) {
@@ -294,7 +350,7 @@ public class AppointmentService {
         slotRepository.save(slot);
 
         appointment = appointmentRepository.save(appointment);
-        auditService.log(null, null, "APPOINTMENT", "STATE_CHANGE",
+        auditService.log(actorId, null, "APPOINTMENT", "STATE_CHANGE",
                 "Appointment", appointment.getId(), "Cancellation approved", null);
         return AppointmentResponse.fromEntity(appointment);
     }
@@ -310,16 +366,21 @@ public class AppointmentService {
             throw new BusinessRuleException("Appointment cannot be rescheduled in current status");
         }
 
-        if (appointment.getRescheduleCount() >= MAX_RESCHEDULES) {
-            throw new BusinessRuleException("Maximum reschedule limit (" + MAX_RESCHEDULES + ") reached");
+        if (appointment.getRescheduleCount() >= DEFAULT_MAX_RESCHEDULES) {
+            throw new BusinessRuleException("Maximum reschedule limit (" + DEFAULT_MAX_RESCHEDULES + ") reached");
         }
 
         AppointmentSlot newSlot = slotRepository.findById(newSlotId)
                 .orElseThrow(() -> new ResourceNotFoundException("New slot not found with id: " + newSlotId));
 
+        // Use property-configured rules for the new slot's property
+        Property newProperty = propertyService.findPropertyOrThrow(newSlot.getPropertyId());
+        propertyService.validateBookingEligibility(newProperty);
+        int advanceHours = resolveAdvanceBookingHours(newProperty);
+
         LocalDateTime newAppointmentTime = LocalDateTime.of(newSlot.getDate(), newSlot.getStartTime());
-        if (newAppointmentTime.isBefore(LocalDateTime.now().plusHours(ADVANCE_BOOKING_HOURS))) {
-            throw new BusinessRuleException("New slot must be at least " + ADVANCE_BOOKING_HOURS + " hours in the future");
+        if (newAppointmentTime.isBefore(LocalDateTime.now().plusHours(advanceHours))) {
+            throw new BusinessRuleException("New slot must be at least " + advanceHours + " hours in the future");
         }
 
         if (newSlot.getBookedCount() >= newSlot.getCapacity()) {
@@ -351,7 +412,7 @@ public class AppointmentService {
         appointment.setNotes(reason != null ? reason : appointment.getNotes());
 
         appointment = appointmentRepository.save(appointment);
-        auditService.log(null, null, "APPOINTMENT", "STATE_CHANGE",
+        auditService.log(userId, null, "APPOINTMENT", "STATE_CHANGE",
                 "Appointment", appointment.getId(),
                 "Rescheduled to slot " + newSlotId + " (count: " + appointment.getRescheduleCount() + ")", null);
         return AppointmentResponse.fromEntity(appointment);
@@ -386,15 +447,40 @@ public class AppointmentService {
 
     private void enforceOwnerOrPrivileged(Appointment appointment, Long userId, String role) {
         boolean isOwner = appointment.getUserId().equals(userId);
-        boolean isPrivileged = "ADMIN".equals(role) || "DISPATCHER".equals(role)
-                || "REVIEWER".equals(role) || "SERVICE_STAFF".equals(role);
-        if (!isOwner && !isPrivileged) {
-            throw new BusinessRuleException("Not authorized to access this appointment");
+        boolean isAdminOrDispatcherOrReviewer = "ADMIN".equals(role) || "DISPATCHER".equals(role)
+                || "REVIEWER".equals(role);
+        boolean isAssignedStaff = "SERVICE_STAFF".equals(role)
+                && appointment.getAssignedServiceStaffId() != null
+                && appointment.getAssignedServiceStaffId().equals(userId);
+        if (!isOwner && !isAdminOrDispatcherOrReviewer && !isAssignedStaff) {
+            throw new AuthorizationException("Not authorized to access this appointment");
         }
     }
 
     private Appointment findAppointmentOrThrow(Long id) {
         return appointmentRepository.findById(id)
                 .orElseThrow(() -> new ResourceNotFoundException("Appointment not found with id: " + id));
+    }
+
+    private int resolveAdvanceBookingHours(Property property) {
+        return property.getMinBookingLeadHours() != null
+                ? property.getMinBookingLeadHours() : DEFAULT_ADVANCE_BOOKING_HOURS;
+    }
+
+    private int resolveMaxBookingDaysAhead(Property property) {
+        return property.getMaxBookingLeadDays() != null
+                ? property.getMaxBookingLeadDays() : DEFAULT_MAX_BOOKING_DAYS_AHEAD;
+    }
+
+    private LocalDateTime parseDate(String dateStr, boolean startOfDay) {
+        if (dateStr == null) {
+            return null;
+        }
+        try {
+            LocalDate date = LocalDate.parse(dateStr);
+            return startOfDay ? date.atStartOfDay() : date.atTime(23, 59, 59);
+        } catch (DateTimeParseException e) {
+            throw new BusinessRuleException("Invalid date format: " + dateStr + ". Expected yyyy-MM-dd");
+        }
     }
 }

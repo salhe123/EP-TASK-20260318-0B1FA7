@@ -15,10 +15,13 @@ spring:
 
 app:
   jwt:
-    secret: ${JWT_SECRET:default-dev-secret-must-be-at-least-32-characters-long-for-hs256}
+    secret: ${JWT_SECRET}
     access-token-expiry: 1800000
     refresh-token-expiry: 604800000
   storage:
     path: ./storage
   security:
-    secondary-verification: false
+    secondary-verification: true
+    secure-cookies: false
+    cors:
+      allowed-origins: http://localhost:3000,http://localhost:8080
